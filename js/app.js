@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260612g";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260612g";
-import { T, LANGS, pickLang } from "./i18n.js?v20260612g";
+import { Matcher, _internal } from "./recognize.js?v20260612h";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260612h";
+import { T, LANGS, pickLang } from "./i18n.js?v20260612h";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -807,7 +807,8 @@ sel.addEventListener("change", () => {
 // ---------------- public comments (giscus — activates at deploy) -----------
 // Fill in after creating the GitHub repo (giscus.app generates these values);
 // until then the section shows a localized "opens in the public release" note.
-const GISCUS = { repo: "", repoId: "", category: "", categoryId: "" };
+const GISCUS = { repo: "TKH54/tbh-appraiser", repoId: "R_kgDOS3x8rw",
+                 category: "General", categoryId: "DIC_kwDOS3x8r84C-90v" };
 function mountComments() {
   if (!GISCUS.repo) return;
   const s = document.createElement("script");
