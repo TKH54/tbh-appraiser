@@ -1,0 +1,63 @@
+{
+ "coins": {
+  "Kingdom 1st Anniversary Coin": {
+   "Common": 2.4,
+   "Uncommon": 12,
+   "Rare": 28,
+   "Legendary": 35,
+   "Immortal": 21
+  },
+  "Empire 1st Anniversary Coin": {
+   "Uncommon": 9.5,
+   "Rare": 23,
+   "Legendary": 31,
+   "Immortal": 23,
+   "Arcana": 12,
+   "Celestial": 0.7
+  },
+  "Kingdom 10th Anniversary Coin": {
+   "Uncommon": 2.7,
+   "Rare": 14,
+   "Legendary": 28,
+   "Immortal": 28,
+   "Arcana": 17,
+   "Beyond": 6.6,
+   "Celestial": 2.7
+  },
+  "Empire 10th Anniversary Coin": {
+   "Uncommon": 1.7,
+   "Legendary": 17,
+   "Immortal": 31,
+   "Arcana": 27,
+   "Beyond": 14,
+   "Celestial": 9.4
+  },
+  "Kingdom 50th Anniversary Coin": {
+   "Immortal": 21,
+   "Arcana": 30,
+   "Beyond": 26,
+   "Celestial": 20,
+   "Divine": 3.1
+  },
+  "Empire 50th Anniversary Coin": {
+   "Arcana": 42,
+   "Beyond": 25,
+   "Celestial": 29,
+   "Divine": 3.3,
+   "Cosmic": 0.6
+  }
+ },
+ "grade_ev_baseline": {
+  "Common": 0.0,
+  "Uncommon": 0.0,
+  "Rare": 0.0,
+  "Legendary": 90.84,
+  "Immortal": 220.79,
+  "Arcana": 893.89,
+  "Beyond": 2608.31,
+  "Celestial": 11001.66,
+  "Divine": 19709.52,
+  "Cosmic": 25305.94
+ },
+ "fee": 0.15
+}

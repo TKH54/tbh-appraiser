@@ -1,0 +1,36 @@
+{
+ "version": 1,
+ "appid": 3678970,
+ "cdn": "https://community.cloudflare.steamstatic.com/economy/image/",
+ "n_refs": 296,
+ "ref_dims": [
+  32,
+  32,
+  3
+ ],
+ "grade_order": [
+  "Common",
+  "Uncommon",
+  "Rare",
+  "Legendary",
+  "Immortal",
+  "Arcana",
+  "Beyond",
+  "Celestial",
+  "Divine",
+  "Cosmic"
+ ],
+ "tradeable": [
+  "Arcana",
+  "Beyond",
+  "Celestial",
+  "Cosmic",
+  "Divine",
+  "Immortal",
+  "Legendary"
+ ],
+ "baseline_window": [
+  "2026-06-02T00:00:00+00:00",
+  "2026-06-09T00:00:00+00:00"
+ ]
+}

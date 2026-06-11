@@ -1,0 +1,44 @@
+# Two-tier price refresh (⑨ near-real-time prices):
+#  - FAST job every 10 min: lowest ask + listing counts (~10 requests, <1 min);
+#    median/volume carried over from the last full run (24h aggregates barely
+#    move within the hour anyway).
+#  - FULL job hourly: adds per-item median + 24h sold (~20 min, 1 req/4.5s).
+# NOTE: GitHub cron is best-effort — fast runs land every 10–20 min in practice.
+name: price-snapshot
+on:
+  schedule:
+    - cron: "*/10 * * * *"     # fast sweep
+    - cron: "7 * * * *"        # full refresh (offset to avoid clashing)
+  workflow_dispatch: {}        # manual run button
+permissions:
+  contents: write
+concurrency:
+  group: prices                # fast/full never run at the same time
+  cancel-in-progress: false
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - name: decide mode (full at minute 7, fast otherwise)
+        id: mode
+        run: |
+          if [ "$(date -u +%M)" = "07" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "fast=" >> "$GITHUB_OUTPUT"
+          else
+            echo "fast=1" >> "$GITHUB_OUTPUT"
+          fi
+      - run: python scripts/build_prices.py
+        env:
+          PRICES_FAST: ${{ steps.mode.outputs.fast }}
+      - name: commit if changed
+        run: |
+          git config user.name "price-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git pull --rebase
+          git add data/prices.json
+          git diff --cached --quiet || git commit -m "price snapshot"
+          git push

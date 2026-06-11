@@ -1,0 +1,356 @@
+// Warehouse-panel + item-grid detection, ported from analyzer.py.
+// Same BGR {w,h,data:Uint8Array} image format as recognize.js.
+//
+// find_souko_panel uses multi-scale TM_CCOEFF_NORMED template matching; a
+// naive full-res NCC at 13 scales is too slow in JS, so we match on a coarse
+// grayscale pyramid first and refine the best candidate at full resolution
+// (same result as cv2 on the reference screenshot, see test_detect.js).
+
+import { _internal } from "./recognize.js?v20260612g";
+const { bgr2hsv } = _internal;
+
+// ---------- gray helpers ----------
+
+export function toGray(img) {
+  const { w, h, data } = img;
+  const g = new Float32Array(w * h);
+  for (let p = 0, i = 0; p < w * h; p++, i += 3) {
+    g[p] = 0.114 * data[i] + 0.587 * data[i + 1] + 0.299 * data[i + 2];
+  }
+  return { w, h, g };
+}
+
+function resizeGray(src, dw, dh) {
+  const { w, h, g } = src;
+  const out = new Float32Array(dw * dh);
+  for (let oy = 0; oy < dh; oy++) {
+    const y0 = oy * h / dh, y1 = (oy + 1) * h / dh;
+    const iy0 = Math.floor(y0), iy1 = Math.min(h, Math.ceil(y1));
+    for (let ox = 0; ox < dw; ox++) {
+      const x0 = ox * w / dw, x1 = (ox + 1) * w / dw;
+      const ix0 = Math.floor(x0), ix1 = Math.min(w, Math.ceil(x1));
+      let s = 0, area = 0;
+      for (let yy = iy0; yy < iy1; yy++) {
+        const wy = Math.min(y1, yy + 1) - Math.max(y0, yy);
+        for (let xx = ix0; xx < ix1; xx++) {
+          const wx = Math.min(x1, xx + 1) - Math.max(x0, xx);
+          s += g[yy * w + xx] * wy * wx; area += wy * wx;
+        }
+      }
+      out[oy * dw + ox] = s / area;
+    }
+  }
+  return { w: dw, h: dh, g: out };
+}
+
+// Integral images (sum + sum of squares) for fast local mean/variance.
+// Computed once per gray image and reused across all template scales.
+function integralOf(img) {
+  const { w: W, h: H, g: I } = img;
+  const S = new Float64Array((W + 1) * (H + 1));
+  const S2 = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) {
+    let rs = 0, rs2 = 0;
+    for (let x = 0; x < W; x++) {
+      const v = I[y * W + x];
+      rs += v; rs2 += v * v;
+      S[(y + 1) * (W + 1) + x + 1] = S[y * (W + 1) + x + 1] + rs;
+      S2[(y + 1) * (W + 1) + x + 1] = S2[y * (W + 1) + x + 1] + rs2;
+    }
+  }
+  return { S, S2 };
+}
+
+// TM_CCOEFF_NORMED of gray template over gray image, restricted to a window.
+// `step` > 1 scans a sparse lattice (coarse pass; refine recovers exactness).
+function nccBest(img, tpl, wx0 = 0, wy0 = 0, wx1 = -1, wy1 = -1, integ = null, step = 1) {
+  const { w: W, h: H, g: I } = img;
+  const { w: tw, h: th, g: T } = tpl;
+  if (wx1 < 0) wx1 = W - tw; if (wy1 < 0) wy1 = H - th;
+  wx0 = Math.max(0, wx0); wy0 = Math.max(0, wy0);
+  wx1 = Math.min(W - tw, wx1); wy1 = Math.min(H - th, wy1);
+  if (wx1 < wx0 || wy1 < wy0 || tw < 2 || th < 2) return { score: -2, x: 0, y: 0 };
+  const n = tw * th;
+  let tm = 0; for (let i = 0; i < n; i++) tm += T[i];
+  tm /= n;
+  const Tc = new Float32Array(n);
+  let tden = 0;
+  for (let i = 0; i < n; i++) { Tc[i] = T[i] - tm; tden += Tc[i] * Tc[i]; }
+  tden = Math.sqrt(tden);
+  if (tden < 1e-6) return { score: -2, x: 0, y: 0 };
+  const { S, S2 } = integ || integralOf(img);
+  const win = (A, x, y) => A[(y + th) * (W + 1) + x + tw] - A[y * (W + 1) + x + tw]
+                         - A[(y + th) * (W + 1) + x] + A[y * (W + 1) + x];
+  let best = { score: -2, x: 0, y: 0 };
+  for (let y = wy0; y <= wy1; y += step) {
+    for (let x = wx0; x <= wx1; x += step) {
+      let cross = 0;
+      for (let ty = 0; ty < th; ty++) {
+        const ib = (y + ty) * W + x, tb = ty * tw;
+        for (let tx = 0; tx < tw; tx++) cross += Tc[tb + tx] * I[ib + tx];
+      }
+      const s1 = win(S, x, y), s2 = win(S2, x, y);
+      const iden = Math.sqrt(Math.max(0, s2 - s1 * s1 / n));
+      const score = iden < 1e-6 ? -2 : cross / (tden * iden);
+      if (score > best.score) best = { score, x, y };
+    }
+  }
+  return best;
+}
+
+// ---------- panel detection (analyzer.find_souko_panel) ----------
+
+const SCALES = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.5, 1.75, 2.0, 2.5];
+const HALF_WIDTH_BASE = 165;
+
+export function findSoukoPanel(img, tplImg, minScore = 0.6) {
+  const W = img.w, H = img.h;
+  const gImg = toGray(img);
+  const gTpl = toGray(tplImg);
+  // Coarse pass on a ~480px-wide pyramid level finds each scale's candidate
+  // position; tiny coarse templates give noisy scores, so EVERY scale is then
+  // re-scored at full resolution around its own candidate and the best
+  // refined score wins (matches cv2's full-res multi-scale result).
+  const k = Math.min(1, 480 / W);
+  const cImg = k < 1 ? resizeGray(gImg, Math.round(W * k), Math.round(H * k)) : gImg;
+  const cInteg = integralOf(cImg);
+  const fInteg = integralOf(gImg);
+  const pad = Math.ceil(2 / k) + 7;          // +1 covers the coarse step lattice
+  let best = null;   // refined: {score, f, x, y, tw, th}
+  for (const f of SCALES) {
+    const ctw = Math.round(gTpl.w * f * k), cth = Math.round(gTpl.h * f * k);
+    if (ctw < 5 || cth < 4 || ctw >= cImg.w || cth >= cImg.h) continue;
+    const c = nccBest(cImg, resizeGray(gTpl, ctw, cth), 0, 0, -1, -1, cInteg, 2);
+    if (c.score < -1) continue;
+    const tw = Math.max(8, Math.round(gTpl.w * f));
+    const th = Math.max(8, Math.round(gTpl.h * f));
+    if (tw >= W || th >= H) continue;
+    const cx0 = Math.round(c.x / k), cy0 = Math.round(c.y / k);
+    const r = nccBest(gImg, resizeGray(gTpl, tw, th),
+                      cx0 - pad, cy0 - pad, cx0 + pad, cy0 + pad, fInteg);
+    if (!best || r.score > best.score) best = { score: r.score, f, x: r.x, y: r.y, tw, th };
+  }
+  if (!best || best.score < minScore) return null;
+  const cx = best.x + (best.tw >> 1);
+  const hw = Math.round(HALF_WIDTH_BASE * best.f);
+  return { score: best.score, scale: best.f, cx, title_y: best.y,
+           x0: Math.max(0, cx - hw), x1: Math.min(W, cx + hw) };
+}
+
+// ---------- cell detection (analyzer.detect_cell_boxes etc.) ----------
+
+// ---------- projection-based grid detection (robust to packed cells) ----------
+// Connected-component boxes fail when adjacent same-rarity cells touch (their
+// bright backgrounds merge a whole row into one bar). Instead we find the
+// regular grid from row/column projection profiles of the saturation mask,
+// recover a clean lattice (pitch + phase) so missing/merged bands are filled
+// in, and keep lattice cells that actually contain an item.
+
+function runs1d(flags, n) {
+  const out = []; let st = -1;
+  for (let i = 0; i < n; i++) {
+    if (flags[i] && st < 0) st = i;
+    else if (!flags[i] && st >= 0) { out.push([st, i]); st = -1; }
+  }
+  if (st >= 0) out.push([st, n]);
+  return out;
+}
+
+// Recover a regular lattice from possibly-incomplete band centers.
+// Returns {pts:[centers...], pitch} fit to the dominant evenly-spaced subset.
+function fitLattice(centers) {
+  centers = [...centers].sort((a, b) => a - b);
+  if (centers.length < 2) return null;
+  const diffs = []; for (let i = 1; i < centers.length; i++) diffs.push(centers[i] - centers[i - 1]);
+  const small = Math.min(...diffs);
+  const consistent = diffs.filter(d => d <= small * 1.5).sort((a, b) => a - b);
+  let pitch = consistent[consistent.length >> 1] || diffs.sort((a, b) => a - b)[diffs.length >> 1];
+  if (pitch < 10) return null;
+  // dominant phase: the (c mod pitch) cluster the most centers agree with
+  let best = [];
+  for (const c0 of centers) {
+    const ph = c0 % pitch;
+    const agree = centers.filter(c => {
+      const d = ((c - ph) % pitch + pitch) % pitch;
+      return Math.min(d, pitch - d) <= pitch * 0.22;
+    });
+    if (agree.length > best.length) best = agree;
+  }
+  const lo = Math.min(...best), hi = Math.max(...best);
+  const pts = [];
+  for (let c = lo; c <= hi + 1; c += pitch) pts.push(Math.round(c));
+  return { pts, pitch };
+}
+
+// roi (BGR) + title_y + UI scale -> grid cells [{col,row,x,y,w,h}]
+export function detectGrid(roi, titleY, scale) {
+  const { w: W, h: H, data } = roi;
+  const sat = new Uint8Array(W * H);     // saturated pixels: drive the projections
+  const lit = new Uint8Array(W * H);     // saturated OR bright: drives "is the slot filled"
+  for (let p = 0, i = 0; p < W * H; p++, i += 3) {
+    const [, s, v] = bgr2hsv(data[i], data[i + 1], data[i + 2]);
+    sat[p] = (s > 55 && v > 70) ? 1 : 0;
+    // pale items (parchment scrolls, silver gear) on a black Common background
+    // have almost no saturation — brightness still separates them from the
+    // dark empty-slot pattern
+    lit[p] = (sat[p] || v > 110) ? 1 : 0;
+  }
+  // column projection
+  const colsum = new Float64Array(W);
+  for (let y = 0; y < H; y++) { const yb = y * W; for (let x = 0; x < W; x++) colsum[x] += sat[yb + x]; }
+  let cmax = 0; for (let x = 0; x < W; x++) if (colsum[x] > cmax) cmax = colsum[x];
+  const colOn = new Uint8Array(W); for (let x = 0; x < W; x++) colOn[x] = colsum[x] > cmax * 0.20 ? 1 : 0;
+  const colBands = runs1d(colOn, W).filter(([a, b]) => b - a >= 24 && b - a <= 64);
+  if (colBands.length < 2) return [];
+  const cw = median(colBands.map(([a, b]) => b - a));
+  const colFit = fitLattice(colBands.map(([a, b]) => (a + b) >> 1));
+  if (!colFit) return [];
+  const cols = colFit.pts;
+  // row projection, restricted to the column regions (ignore gutters)
+  const colMask = new Uint8Array(W);
+  for (const c of cols) for (let x = Math.max(0, c - (cw >> 1)); x < Math.min(W, c + (cw >> 1)); x++) colMask[x] = 1;
+  const rowsum = new Float64Array(H);
+  for (let y = 0; y < H; y++) { const yb = y * W; let s = 0; for (let x = 0; x < W; x++) if (colMask[x]) s += sat[yb + x]; rowsum[y] = s; }
+  let rmax = 0; for (let y = 0; y < H; y++) if (rowsum[y] > rmax) rmax = rowsum[y];
+  const ymin = titleY + Math.round(78 * scale);    // grid starts below the tab row
+  const rowOn = new Uint8Array(H); for (let y = 0; y < H; y++) rowOn[y] = rowsum[y] > rmax * 0.12 ? 1 : 0;
+  const rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= 24 && b - a <= 64 && ((a + b) >> 1) >= ymin);
+  if (rowBands.length < 1) return [];
+  const rh = median(rowBands.map(([a, b]) => b - a));
+  const rowFit = fitLattice(rowBands.map(([a, b]) => (a + b) >> 1));
+  if (!rowFit) return [];
+  const rows = rowFit.pts;
+  // emit filled cells
+  const cells = [];
+  rows.forEach((ry, ri) => cols.forEach((cx, ci) => {
+    const x0 = Math.max(0, cx - (cw >> 1)), y0 = Math.max(0, ry - (rh >> 1));
+    const x1 = Math.min(W, cx + (cw >> 1)), y1 = Math.min(H, ry + (rh >> 1));
+    let cov = 0, n = (x1 - x0) * (y1 - y0);
+    for (let y = y0; y < y1; y++) { const yb = y * W; for (let x = x0; x < x1; x++) cov += lit[yb + x]; }
+    if (n > 0 && cov / n > 0.08) cells.push({ col: ci, row: ri, x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+  }));
+  return cells;
+}
+
+function morphClose3(mask, w, h) {
+  const dil = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let v = 0;
+    for (let dy = -1; dy <= 1 && !v; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy >= 0 && yy < h && xx >= 0 && xx < w && mask[yy * w + xx]) { v = 1; break; }
+    }
+    dil[y * w + x] = v;
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let v = 1;
+    for (let dy = -1; dy <= 1 && v; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const yy = y + dy, xx = x + dx;
+      if (yy < 0 || yy >= h || xx < 0 || xx >= w || !dil[yy * w + xx]) { v = 0; break; }
+    }
+    out[y * w + x] = v;
+  }
+  return out;
+}
+
+// bounding boxes of 8-connected components (== external contours' boundingRect)
+function componentBoxes(mask, w, h) {
+  const label = new Int32Array(w * h);
+  const boxes = [];
+  const stack = [];
+  let nlab = 0;
+  for (let p = 0; p < w * h; p++) {
+    if (!mask[p] || label[p]) continue;
+    nlab++;
+    let x0 = w, y0 = h, x1 = 0, y1 = 0;
+    stack.push(p); label[p] = nlab;
+    while (stack.length) {
+      const q = stack.pop();
+      const x = q % w, y = (q / w) | 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const yy = y + dy, xx = x + dx;
+        if (yy < 0 || yy >= h || xx < 0 || xx >= w) continue;
+        const r = yy * w + xx;
+        if (mask[r] && !label[r]) { label[r] = nlab; stack.push(r); }
+      }
+    }
+    boxes.push([x0, y0, x1 - x0 + 1, y1 - y0 + 1]);
+  }
+  return boxes;
+}
+
+const median = a => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+export function detectCellBoxes(roi, sMin = 55, vMin = 70) {
+  const { w, h, data } = roi;
+  let mask = new Uint8Array(w * h);
+  for (let p = 0, i = 0; p < w * h; p++, i += 3) {
+    const [, s, v] = bgr2hsv(data[i], data[i + 1], data[i + 2]);
+    mask[p] = (s > sMin && v > vMin) ? 1 : 0;
+  }
+  mask = morphClose3(mask, w, h);
+  const raw = componentBoxes(mask, w, h);
+  if (!raw.length) return [];
+  const sq = raw.filter(r => r[2] / r[3] > 0.6 && r[2] / r[3] < 1.6 && r[2] > 12 && r[3] > 12);
+  if (!sq.length) return [];
+  const med = median(sq.map(r => r[2]).concat(sq.map(r => r[3])));
+  const lo = (med * 0.55) ** 2, hi = (med * 1.6) ** 2;
+  return raw.filter(([x, y, bw, bh]) => {
+    const ar = bw / bh, area = bw * bh;
+    return ar > 0.6 && ar < 1.6 && area > lo && area < hi;
+  });
+}
+
+function clusterCenters(values, tol) {
+  if (!values.length) return [];
+  const v = [...values].sort((a, b) => a - b);
+  const clusters = [[v[0]]];
+  for (const x of v.slice(1)) {
+    const last = clusters[clusters.length - 1];
+    if (x - last[last.length - 1] <= tol) last.push(x);
+    else clusters.push([x]);
+  }
+  return clusters.map(c => Math.round(c.reduce((a, b) => a + b, 0) / c.length));
+}
+
+export function snapToGrid(boxes) {
+  if (!boxes.length) return [];
+  const medW = median(boxes.map(b => b[2]));
+  const medH = median(boxes.map(b => b[3]));
+  const colC = clusterCenters(boxes.map(b => b[0] + (b[2] >> 1)), Math.max(8, medW >> 1));
+  const rowC = clusterCenters(boxes.map(b => b[1] + (b[3] >> 1)), Math.max(8, medH >> 1));
+  const nearest = (v, cs) => {
+    let bi = 0, bd = Infinity;
+    cs.forEach((c, i) => { const d = Math.abs(v - c); if (d < bd) { bd = d; bi = i; } });
+    return bi;
+  };
+  return boxes.map(([x, y, w, h]) => ({
+    col: nearest(x + (w >> 1), colC), row: nearest(y + (h >> 1), rowC), x, y, w, h,
+  }));
+}
+
+export function cleanGrid(cells, titleY = null) {
+  if (!cells.length) return [];
+  const medH = median(cells.map(c => c.h));
+  let out = cells;
+  if (titleY != null) {
+    out = out.filter(c => c.y + c.h / 2 > titleY + 1.3 * medH);
+  }
+  if (!out.length) out = cells;
+  const rowc = {}, colc = {};
+  for (const c of out) { rowc[c.row] = (rowc[c.row] || 0) + 1; colc[c.col] = (colc[c.col] || 0) + 1; }
+  return out.filter(c => rowc[c.row] >= 2 && colc[c.col] >= 2);
+}
+
+// ---------- top-level: screenshot -> panel + cells ----------
+
+export function readWarehouse(img, tplImg) {
+  const panel = findSoukoPanel(img, tplImg);
+  if (!panel) return { panel: null, roi: null, cells: [] };
+  const roi = _internal.crop(img, panel.x0, 0, panel.x1 - panel.x0, img.h);
+  const cells = detectGrid(roi, panel.title_y, panel.scale);
+  return { panel, roi, cells };
+}
