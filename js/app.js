@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260612h";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260612h";
-import { T, LANGS, pickLang } from "./i18n.js?v20260612h";
+import { Matcher, _internal } from "./recognize.js?v20260613c";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260613c";
+import { T, LANGS, pickLang } from "./i18n.js?v20260613c";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -12,7 +12,12 @@ const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- state ----------------
 let LANG = pickLang();
-let MODE = localStorage.getItem("tbh_mode") || "base";   // 'base' | 'cur'
+// Steam sell restriction lifts 2026-06-15 (00:00 JST = 6/14 15:00 UTC). After
+// that, 現在価格 is the real tradeable market → default to it and relabel 規制前
+// as a reference (see tu() + i18n *_post strings).
+const UNLOCKED = Date.now() >= Date.UTC(2026, 5, 14, 15);
+let MODE = localStorage.getItem("tbh_mode") || (UNLOCKED ? "cur" : "base");   // 'base' | 'cur'
+let GMODE = MODE;   // gacha "sell" basis — switchable INDEPENDENTLY of the main table
 let DATA = null;        // {items, vbb, matcher, tpl, baseline, gacha, meta, prices}
 let STREAM = null, VIDEO = null;
 let SCAN = null;        // {imgW,imgH, cells:[{...item, assigned, ignored}]}
@@ -20,7 +25,12 @@ let SORT = JSON.parse(localStorage.getItem("tbh_sort") || '{"k":"total","d":-1}'
 let POP_I = -1;
 
 const t = k => (T[LANG] && T[LANG][k] !== undefined) ? T[LANG][k] : T.en[k];
+const tu = k => t(UNLOCKED ? k + "_post" : k);   // post-sell-unlock variant of a label/banner
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// inline ? badge (matches the yellow "?" drawn on unconfirmed cells); i18n
+// strings carry a literal [?] placeholder where the badge should appear.
+const QBADGE = '<span class="qmark">?</span>';
+const withQ = key => esc(t(key)).replace(/\[\?\]/g, QBADGE);
 
 // ---------------- data loading ----------------
 async function loadData() {
@@ -58,8 +68,8 @@ const marketUrl = h => `https://steamcommunity.com/market/listings/${DATA.meta.a
 const marketSearchUrl = base => `https://steamcommunity.com/market/search?appid=${DATA.meta.appid}&q=${encodeURIComponent(base)}&l=${STEAM_LANG[LANG] || "english"}`;
 
 // ---------------- price helpers ----------------
-function unitPrice(hash) {        // 1個の価格 in the current basis (JPY)
-  if (MODE === "base") {
+function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
+  if (mode === "base") {
     const b = DATA.baseline[hash];
     return b && b[0] != null ? b[0] : null;
   }
@@ -67,6 +77,7 @@ function unitPrice(hash) {        // 1個の価格 in the current basis (JPY)
   if (!p) return null;
   return p.m ?? p.p ?? null;      // median of real sales when known, else lowest ask
 }
+function unitPrice(hash) { return unitPriceIn(hash, MODE); }   // main table -> global toggle
 function volume(hash) {           // baseline: avg sold PER DAY pre-freeze / cur: sold in 24h
   if (MODE === "base") {
     const b = DATA.baseline[hash];
@@ -253,17 +264,21 @@ async function runScan(img) {
 
   // auto-confirm: learned items (your own repeatedly-labelled gear) get a
   // looser bar since getDisplayMedia inflates their distance; catalog-only
-  // matches stay strict to avoid the coin false-positive.
-  const AUTO_CAT = 0.05, AUTO_LEARN = 0.075;
+  // matches stay strict to avoid the coin false-positive. CATALOG materials
+  // (coins/gems — simple-icon attractors that mis-extracted gear collapses into)
+  // get an even STRICTER bar so a borderline hit surfaces as a "?" to review
+  // rather than auto-confirming as a coin the player never owned.
+  const AUTO_CAT = 0.05, AUTO_LEARN = 0.075, AUTO_MAT = 0.03;
+  const autoBar = it => it.learned ? AUTO_LEARN : (it.material ? AUTO_MAT : AUTO_CAT);
   const cells = res.items.map(it => ({
     ...it,
-    assigned: (it.status === "ok" && it.hash &&
-               it.dist <= (it.learned ? AUTO_LEARN : AUTO_CAT)) ? it.hash : null,
+    assigned: (it.status === "ok" && it.hash && it.dist <= autoBar(it)) ? it.hash : null,
     ignored: it.status === "not_tradeable",
     roiImg: null,
   }));
   SCAN = { roi: res.roi, imgW: res.roi.w, imgH: res.roi.h, cells, srcImg: img };
   $("hero").style.display = "none";        // demo gives way to the real thing
+  $("guide").removeAttribute("open");      // collapse the tutorial (still re-openable)
   drawScan();
   renderAll();
   const auto = cells.filter(c => c.assigned).length;
@@ -382,7 +397,9 @@ function drawOverlays() {
     box.appendChild(o);
   });
   const need = SCAN.cells.filter(c => !c.assigned && !c.ignored).length;
-  $("reviewMsg").textContent = need ? t("review_hint") : "";
+  // the click-to-fix hint now lives prominently in the legend above the canvas;
+  // keep the area below the image clear so the layout stays put
+  $("reviewMsg").innerHTML = "";
 }
 
 function addDebugSave(img) {
@@ -541,14 +558,19 @@ function renderGacha() {
   const g = DATA.gacha;
   if (!g) return;
   $("gacha").style.display = "block";
-  const ev = {};                       // grade -> avg gear value in CURRENT basis
+  // the "sell" column basis is a button switchable HERE, independent of the main table
+  const gcur = GMODE === "cur";
+  $("gNote").innerHTML = `${esc(t("gacha_basis"))} `
+    + `<button type="button" id="gBasisBtn" class="bchip ${gcur ? "cur" : "base"}" title="${esc(t("gacha_basis_tip"))}">`
+    + `${esc(gcur ? t("mode_cur") : tu("mode_base"))} ⇄</button><br>${esc(t("gacha_note"))}`;
+  $("gBasisBtn").onclick = () => { GMODE = GMODE === "cur" ? "base" : "cur"; renderGacha(); };
   // use baseline grade EVs always (current per-grade averages aren't in prices.json);
   // coins' sell price follows the displayed basis.
   const gradeEV = g.grade_ev_baseline;
   const rows = [];
   for (const [coin, odds] of Object.entries(g.coins)) {
     const spin = Object.entries(odds).reduce((s, [gr, p]) => s + p / 100 * (gradeEV[gr] || 0), 0) * FEE;
-    const sellU = unitPrice(coin);
+    const sellU = unitPriceIn(coin, GMODE);
     const sell = sellU != null ? sellU * FEE : null;
     rows.push({ coin, spin, sell });
   }
@@ -741,11 +763,11 @@ function applyMode() {
   bn.style.display = "block";
   if (MODE === "base") {
     bn.className = "base";
-    bn.innerHTML = esc(t("banner_base")) + ` <a href="#" id="bnSwap">${esc(t("to_cur"))}</a>`;
+    bn.innerHTML = esc(tu("banner_base")) + ` <a href="#" id="bnSwap">${esc(t("to_cur"))}</a>`;
   } else {
     bn.className = "cur";
     const ts = DATA?.prices?.t ? new Date(DATA.prices.t).toLocaleString(LANG) : "—";
-    bn.innerHTML = esc(t("banner_cur")(ts)) + ` <a href="#" id="bnSwap">${esc(t("to_base"))}</a>`;
+    bn.innerHTML = esc(tu("banner_cur")(ts)) + ` <a href="#" id="bnSwap">${esc(t("to_base"))}</a>`;
   }
   $("bnSwap").onclick = ev => { ev.preventDefault(); setMode(MODE === "base" ? "cur" : "base"); };
 }
@@ -768,15 +790,19 @@ function applyLang() {
   $("capBtn").title = t("capture_help");
   $("scanBtn").textContent = STREAM ? t("rescan_btn") : t("scan_btn");
   $("modeCur").textContent = t("mode_cur");
-  $("modeBase").textContent = t("mode_base");
-  $("modeBase").title = t("mode_base_tip");
+  $("modeBase").textContent = tu("mode_base");
+  $("modeBase").title = tu("mode_base_tip");
   set("tTotalLabel", "total_label"); set("netNote", "net_note");
   set("gTitle", "gacha_title"); set("gNote", "gacha_note");
   set("ghSpin", "gacha_spin"); set("ghSell", "gacha_sell");
-  set("stepsTitle", "steps_title");
-  set("st1", "step1"); set("st2", "step2"); set("st3", "step3");
-  set("sellTitle", "sell_title");
-  set("sp1", "sell1"); set("sp2", "sell2"); set("sp3", "sell3"); set("sp4", "sell4");
+  set("guideTitle", "steps_title");
+  $("gd1").innerHTML = t("step1");
+  $("gd2").innerHTML = t("step2");                          // step2/3 carry colored <span class='btnref'>
+  $("gd2").querySelector(".btnref")?.classList.add("bconn"); // connect = accent gradient; appraise stays blue
+  $("gd3").innerHTML = t("step3").replace(/\[\?\]/g, QBADGE);
+  set("guideNote", "verify_note");
+  $("dmNote").textContent = t("dm_note");
+  $("tPriceRefresh").textContent = t("price_refresh");
   set("tPrivacy", "privacy"); set("tUnofficial", "unofficial");
   set("popTitle", "pop_title"); set("popRarLbl", "pop_rar");
   set("learnNote", "learn_note");
@@ -784,10 +810,7 @@ function applyLang() {
   set("popIgnore", "pop_ignore"); set("popClose", "pop_close");
   set("fbTitle", "fb_title"); set("fbSend", "fb_send"); set("fbCancel", "fb_cancel");
   $("fbText").placeholder = t("fb_placeholder");
-  $("legend").innerHTML =
-    `<span><b style="color:#ffd60a">?</b> = ${esc(t("review_hint"))}</span>`;
-  $("cmtTitle").textContent = t("comments_title");
-  if (!GISCUS.repo) $("giscusBox").textContent = t("comments_note");
+  $("legend").innerHTML = `<span class="hint">${withQ("review_hint")}</span>`;
   $("heroCap").textContent = t("hero_cap");
   if (DATA) { applyMode(); renderTable(); renderGacha(); }
 }
@@ -803,28 +826,6 @@ sel.addEventListener("change", () => {
   localStorage.setItem("tbh_lang", LANG);
   applyLang();
 });
-
-// ---------------- public comments (giscus — activates at deploy) -----------
-// Fill in after creating the GitHub repo (giscus.app generates these values);
-// until then the section shows a localized "opens in the public release" note.
-const GISCUS = { repo: "TKH54/tbh-appraiser", repoId: "R_kgDOS3x8rw",
-                 category: "General", categoryId: "DIC_kwDOS3x8r84C-90v" };
-function mountComments() {
-  if (!GISCUS.repo) return;
-  const s = document.createElement("script");
-  s.src = "https://giscus.app/client.js";
-  s.async = true; s.crossOrigin = "anonymous";
-  s.setAttribute("data-repo", GISCUS.repo);
-  s.setAttribute("data-repo-id", GISCUS.repoId);
-  s.setAttribute("data-category", GISCUS.category);
-  s.setAttribute("data-category-id", GISCUS.categoryId);
-  s.setAttribute("data-mapping", "pathname");
-  s.setAttribute("data-reactions-enabled", "1");
-  s.setAttribute("data-theme", "dark");
-  s.setAttribute("data-lang", LANG === "ja" ? "ja" : LANG);
-  $("giscusBox").innerHTML = "";
-  $("giscusBox").appendChild(s);
-}
 
 // ---------------- feedback (⑦ private to developer) ----------------
 // One-click sending: POST to FEEDBACK_ENDPOINT when configured (e.g. a free
@@ -860,10 +861,15 @@ function applyConnState() {
   scan.disabled = !STREAM;
   scan.textContent = STREAM ? (SCAN ? t("rescan_btn") : t("scan_btn")) : t("scan_btn");
   cap.textContent = STREAM ? "✅ " + t("connected").split("—")[0].trim() : t("capture_btn");
-  // distinct colours: connected = green check, scan = the loud primary action
-  cap.classList.toggle("connected", !!STREAM);
-  cap.classList.toggle("accent", !STREAM);
-  scan.classList.toggle("accent", !!STREAM);
+  // fixed button colours: connect = green, appraise = blue (matches the step chips)
+  cap.classList.add("connected"); cap.classList.remove("accent");
+  scan.classList.remove("accent");
+  // nudge the user through the steps: once connected (and not yet scanned),
+  // light up the guide card and flag step 2 ("open the warehouse, then appraise")
+  const guide = $("guide");
+  if (guide) {
+    guide.classList.toggle("connected", !!STREAM && !SCAN);
+  }
 }
 // hover a table row -> spotlight that item's cells in the warehouse image
 function hlCells(hash, on) {
@@ -914,5 +920,5 @@ setStatus("…");
 }
 // debug hook: lets a test harness drive a scan with a raw BGR image
 window.__runScan = img => runScan(img);
-loadData().then(() => { injectLearnedRefs(); applyLang(); mountComments(); setStatus(t("not_connected")); })
+loadData().then(() => { injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); })
   .catch(e => setStatus("data load error: " + e));

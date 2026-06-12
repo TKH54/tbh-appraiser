@@ -36,6 +36,12 @@
   #cols { display:flex; gap:1.4rem; align-items:flex-start; flex-wrap:wrap; margin-top:1rem; }
   #capCol { flex:0 1 auto; min-width:280px; max-width:100%; }
   #resCol { flex:1 1 480px; min-width:320px; }
+  /* on the 2-column layout the capture column sticks so the warehouse image
+     follows while the long results list scrolls; a tall image scrolls inside. */
+  @media (min-width:700px) {
+    #capCol { position:sticky; top:.8rem; align-self:flex-start; }
+    #capCol #scanWrap { max-height:calc(100vh - 1.6rem); overflow:auto; }
+  }
 
   /* capture area */
   #scanBox { position:relative; display:inline-block; background:#000; border:1px solid #30363d;
@@ -43,6 +49,9 @@
   #scanCanvas { display:block; image-rendering:pixelated; max-width:100%; }
   .legend { font-size:.7rem; color:#9aa4b8; margin:.4rem 0; }
   .legend span { margin-right:.9rem; white-space:nowrap; }
+  /* prominent click-to-fix hint shown above the warehouse image */
+  .legend .hint { white-space:normal; margin:0; font-size:1rem; font-weight:800; color:#ffd60a;
+                  text-shadow:0 0 .35rem rgba(255,214,10,.55); }
   .dot { display:inline-block; width:.55rem; height:.55rem; border-radius:.15rem; vertical-align:middle;
          margin-right:.25rem; border:2px solid; }
 
@@ -57,12 +66,19 @@
   .ov .spark { position:absolute; top:-.65rem; left:-.5rem; font-size:.9rem;
                filter:drop-shadow(0 0 .25rem #ffd166); animation:qpulse 1.3s ease-in-out infinite; }
   .ov.skip { border:2px solid rgba(110,118,129,.45); }
-  .ov.review { border:none; }
+  /* unconfirmed cells: yellow frame (matches the ? badge) pulsing in sync with it */
+  .ov.review { border:3px solid #ffd60a; animation:reviewpulse 1.1s ease-in-out infinite; }
+  @keyframes reviewpulse { 0%,100% { box-shadow:0 0 .25rem rgba(255,214,10,.5); }
+                           50% { box-shadow:0 0 .7rem .1rem rgba(255,214,10,.9); } }
   .ov .badge { position:absolute; top:-0.55rem; right:-0.55rem; font-size:.85rem; line-height:1;
                padding:.2rem .36rem; border-radius:50%; background:#ffd60a; color:#1a1400;
                font-weight:900; box-shadow:0 0 .5rem rgba(255,214,10,.95);
                animation:qpulse 1.1s ease-in-out infinite; }
   @keyframes qpulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.25); } }
+  /* inline copy of the cell's ? badge, for use inside help text */
+  .qmark { display:inline-block; width:1.3em; height:1.3em; line-height:1.3em; text-align:center;
+           border-radius:50%; background:#ffd60a; color:#1a1400; font-weight:900; font-size:.85em;
+           vertical-align:middle; box-shadow:0 0 .3rem rgba(255,214,10,.85); }
   .ov:hover { background:rgba(111,177,255,.22); }
   /* table-row hover -> spotlight matching warehouse cells */
   .ov.hl { outline:3px solid #fff; box-shadow:0 0 .9rem .2rem rgba(255,255,255,.85);
@@ -133,12 +149,29 @@
   #gacha table { font-size:.78rem; }
   .verdict-spin { color:#7ee787; font-weight:800; }
   .verdict-sell { color:#ffa657; font-weight:800; }
+  /* current price-basis chip in the gacha panel (matches the mode banner colours) */
+  .bchip { display:inline-block; padding:.12rem .55rem; border-radius:.6rem; font-weight:700; font-size:.82rem; }
+  .bchip.cur  { background:#1b2a1e; border:1px solid #2ea043; color:#aff5b4; }
+  .bchip.base { background:#2b2347; border:1px solid #5a4a80; color:#d6c6ff; }
 
-  /* steps / selling points (⑮) */
-  #intro { display:flex; gap:1.2rem; flex-wrap:wrap; margin-top:1.4rem; }
-  #intro > div { flex:1 1 320px; background:#11161f; border:1px solid #30363d; border-radius:.8rem; padding:.9rem 1rem; }
-  #intro h2 { font-size:.95rem; margin:.1rem 0 .5rem; }
-  #intro ol, #intro ul { margin:.2rem 0; padding-left:1.3rem; font-size:.8rem; line-height:1.8; }
+  /* how-to card (top of the results column) — collapsible <details> so the
+     tutorial stays available after a scan. Highlights green once connected. */
+  #guide { background:#161b24; border:1px solid #30363d; border-radius:.8rem;
+           padding:.8rem 1rem; margin-bottom:1rem; }
+  #guide > summary { font-size:.95rem; font-weight:700; cursor:pointer; list-style:none; outline:none; }
+  #guide > summary::-webkit-details-marker { display:none; }
+  #guide > summary::before { content:"▶"; display:inline-block; margin-right:.45rem;
+                             font-size:.75em; color:#9aa4b8; transition:transform .15s; }
+  #guide[open] > summary::before { transform:rotate(90deg); }
+  #guide ol { margin:.55rem 0 .2rem; padding-left:1.4rem; font-size:.85rem; line-height:1.9; }
+  #guide li.cur { color:#aff5b4; font-weight:700; }
+  #guide li.cur::marker { color:#2ea043; }
+  #guide.connected { border-color:#2ea043; box-shadow:0 0 .6rem rgba(46,160,67,.28); }
+  #guideNote { margin-top:.35rem; font-size:.82rem; color:#ffa657; font-weight:600; }
+  /* button-name references inside the steps — each colored like its real button */
+  .btnref { display:inline-block; background:#2d6cdf; color:#fff; font-weight:700;
+            padding:.05rem .45rem; border-radius:.4rem; white-space:nowrap; }   /* 倉庫を査定する */
+  .btnref.bconn { background:#1f6f3f; }   /* ゲーム画面に接続 = 接続ボタン(緑) */
 
   /* popover */
   #pop { position:fixed; z-index:60; display:none; width:21rem; max-width:95vw; background:#0d1117;
@@ -191,10 +224,12 @@
     <a id="xLink" href="https://x.com/homusensi" target="_blank" rel="noopener"
        style="background:#21262d; color:#cdd6e4; padding:.42rem .8rem; border-radius:.5rem;
               font-size:.75rem; text-decoration:none; font-weight:600;">𝕏 @homusensi</a>
+    <a id="dmNote" class="foot" href="https://x.com/homusensi" target="_blank" rel="noopener"
+       style="max-width:13rem; line-height:1.3; text-decoration:none;"></a>
   </div>
 
   <div class="topbar" style="margin-top:.5rem;">
-    <button class="big accent" id="capBtn"></button>
+    <button class="big connected" id="capBtn"></button>
     <button class="big" id="scanBtn" disabled></button>
     <span class="seg">
       <button id="modeCur"></button><button id="modeBase"></button>
@@ -222,6 +257,12 @@
     </div>
 
     <div id="resCol">
+      <!-- onboarding steps: open at first; collapses (still re-openable) after a scan -->
+      <details id="guide" open>
+        <summary id="guideTitle"></summary>
+        <ol><li id="gd1"></li><li id="gd2"></li><li id="gd3"></li></ol>
+        <div id="guideNote"></div>
+      </details>
       <div class="total"><span id="tTotalLabel"></span>: <b id="totalVal" class="p0">—</b>
         <span class="foot" id="netNote" style="margin-left:.5rem;"></span></div>
       <div id="topFind"></div>
@@ -241,11 +282,6 @@
         </tr></thead><tbody id="gRows"></tbody></table>
       </div>
     </div>
-  </div>
-
-  <div id="intro">
-    <div><h2 id="stepsTitle"></h2><ol><li id="st1"></li><li id="st2"></li><li id="st3"></li></ol></div>
-    <div><h2 id="sellTitle"></h2><ul><li id="sp1"></li><li id="sp2"></li><li id="sp3"></li><li id="sp4"></li></ul></div>
   </div>
 
   <!-- correction popover -->
@@ -276,16 +312,12 @@
     </div>
   </div></div>
 
-  <div id="comments" style="margin-top:1.6rem;">
-    <h2 id="cmtTitle" style="font-size:.95rem; margin:.2rem 0 .5rem;"></h2>
-    <div id="giscusBox" class="foot"></div>
-  </div>
-
   <footer class="foot">
+    <div id="tPriceRefresh" style="margin-bottom:.3rem; color:#9aa4b8;"></div>
     <div id="tPrivacy"></div>
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260612h"></script>
+<script type="module" src="js/app.js?v20260613c"></script>
 </body>
 </html>

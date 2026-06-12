@@ -1,8 +1,8 @@
 // Full scan pipeline: screenshot -> warehouse cells -> identified items.
 // Ports matcher.py identify() on top of detect.js + recognize.js.
 
-import { readWarehouse } from "./detect.js?v20260612h";
-import { Matcher, _internal } from "./recognize.js?v20260612h";
+import { readWarehouse } from "./detect.js?v20260613c";
+import { Matcher, _internal } from "./recognize.js?v20260613c";
 const { crop, borderRarity, vecFromItem, extractFlood, bgr2hsv } = _internal;
 
 // The red "can't equip" X (lower-right) appears ONLY on equipment — materials
@@ -110,9 +110,14 @@ export function identifyCell(matcher, vbb, cell, skips = []) {
 
   const variants = matched ? (vbb.get(base) || []) : [];
 
-  // materials/decorations (single ""-rarity entry) trade at ANY grade
+  // materials/decorations (single ""-rarity entry) trade at ANY grade.
+  // `material:true` lets the UI hold these to a STRICTER auto-confirm distance:
+  // simple round icons (coins/gems) are attractors that a mis-extracted piece of
+  // gear collapses into at ~0.02-0.05, while a genuine material matches at
+  // ~0.003-0.012 — so a borderline material hit should be reviewed, not silently
+  // auto-confirmed as e.g. a coin the player never had.
   if (matched && variants.length === 1 && variants[0].rarity === "") {
-    return fin({ hash: variants[0].hash, tradeable: true, status: "ok" });
+    return fin({ hash: variants[0].hash, tradeable: true, status: "ok", material: true });
   }
   // Common/Uncommon/Rare equipment can't be traded
   if (NON_SELLABLE.has(rarity)) return fin({ status: "not_tradeable" });

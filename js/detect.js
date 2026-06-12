@@ -6,7 +6,7 @@
 // grayscale pyramid first and refine the best candidate at full resolution
 // (same result as cv2 on the reference screenshot, see test_detect.js).
 
-import { _internal } from "./recognize.js?v20260612h";
+import { _internal } from "./recognize.js?v20260613c";
 const { bgr2hsv } = _internal;
 
 // ---------- gray helpers ----------
@@ -199,8 +199,15 @@ export function detectGrid(roi, titleY, scale) {
   const colsum = new Float64Array(W);
   for (let y = 0; y < H; y++) { const yb = y * W; for (let x = 0; x < W; x++) colsum[x] += sat[yb + x]; }
   let cmax = 0; for (let x = 0; x < W; x++) if (colsum[x] > cmax) cmax = colsum[x];
+  // Cell-band width acceptance, relative to the detected UI scale. The window
+  // only ever GROWS vs the old fixed [24,64] (identical at scale 1.0), so normal
+  // captures are unchanged — but at 1.25/1.5/2x in-game window-scale or hi-DPI
+  // monitors the cells are wider than 64px and were being filtered out, which
+  // dropped whole rows/columns ("升目が入りきらない / ラベルが剥がれる").
+  const bandLo = Math.min(24, Math.round(24 * scale));
+  const bandHi = Math.max(64, Math.round(64 * scale));
   const colOn = new Uint8Array(W); for (let x = 0; x < W; x++) colOn[x] = colsum[x] > cmax * 0.20 ? 1 : 0;
-  const colBands = runs1d(colOn, W).filter(([a, b]) => b - a >= 24 && b - a <= 64);
+  const colBands = runs1d(colOn, W).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi);
   if (colBands.length < 2) return [];
   const cw = median(colBands.map(([a, b]) => b - a));
   const colFit = fitLattice(colBands.map(([a, b]) => (a + b) >> 1));
@@ -214,7 +221,7 @@ export function detectGrid(roi, titleY, scale) {
   let rmax = 0; for (let y = 0; y < H; y++) if (rowsum[y] > rmax) rmax = rowsum[y];
   const ymin = titleY + Math.round(78 * scale);    // grid starts below the tab row
   const rowOn = new Uint8Array(H); for (let y = 0; y < H; y++) rowOn[y] = rowsum[y] > rmax * 0.12 ? 1 : 0;
-  const rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= 24 && b - a <= 64 && ((a + b) >> 1) >= ymin);
+  const rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi && ((a + b) >> 1) >= ymin);
   if (rowBands.length < 1) return [];
   const rh = median(rowBands.map(([a, b]) => b - a));
   const rowFit = fitLattice(rowBands.map(([a, b]) => (a + b) >> 1));

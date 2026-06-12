@@ -240,28 +240,50 @@ function* cellVariants(cell) {
 
 // ---------- border rarity ----------
 
+// Hue bands (cv2 0-179 scale). Calibrated against real captures: getDisplayMedia
+// reads ~+10-12 hue higher than the reference swatches, so in-game borders sit at
+// Arcana≈140, Beyond≈169 — Beyond was pinned to the very top of its old 145-169
+// band and any extra shift tipped it past 170 into Immortal (red), making Beyond
+// items resolve as the wrong grade / "?". Boundaries moved up to give Beyond margin
+// on both sides while real red (median hue ≈0) stays firmly in Immortal.
 const RARITY_HUE = [
-  ["Legendary", 9, 22], ["Immortal", 0, 8], ["Arcana", 123, 144],
-  ["Beyond", 145, 169], ["Rare", 90, 122], ["Uncommon", 35, 85],
+  ["Legendary", 9, 22], ["Immortal", 0, 8], ["Arcana", 123, 154],
+  ["Beyond", 155, 175], ["Rare", 90, 122], ["Uncommon", 35, 85],
 ];
 
-// matcher.py border_rarity: sample top+left edges, median hue -> grade.
+function hueToRarity(hue) {
+  if (hue >= 176) return "Immortal";   // red wrap-around (was 170; raised so Beyond≈169 isn't swallowed)
+  for (const [name, lo, hi] of RARITY_HUE) if (hue >= lo && hue <= hi) return name;
+  return null;
+}
+
+// Sample the top+left border strip and take the PLURALITY rarity band, not the
+// median hue. A median is fragile when a long icon (staff/spear) pokes its tip
+// into the thin strip: e.g. a teal comet (hue ≈86-89, which sits in a band gap)
+// drags an Arcana-purple border's median into the gap and the grade reads as
+// "unknown" even though the frame is plainly Arcana. The ring is still the
+// dominant colour, so voting per-pixel into bands lets the real band win and
+// ignores the minority contamination. (Verified identical to the old median on
+// clean cells.)
 function borderRarity(cell) {
   const { w, h, data } = cell;
   const t = Math.max(2, Math.floor(0.08 * w));
-  const hs = [];
+  const votes = new Map();
+  let total = 0;
   const sample = (x, y) => {
-    const [hh, s, v] = bgr2hsv(data[(y * w + x) * 3], data[(y * w + x) * 3 + 1], data[(y * w + x) * 3 + 2]);
-    if (s > 80 && v > 60) hs.push(hh);
+    const o = (y * w + x) * 3;
+    const [hh, s, v] = bgr2hsv(data[o], data[o + 1], data[o + 2]);
+    if (s <= 80 || v <= 60) return;
+    total++;
+    const r = hueToRarity(hh);
+    if (r) votes.set(r, (votes.get(r) || 0) + 1);
   };
   for (let y = 0; y < t; y++) for (let x = 0; x < Math.floor(w * 0.60); x++) sample(x, y);
   for (let y = 0; y < Math.floor(h * 0.60); y++) for (let x = 0; x < t; x++) sample(x, y);
-  if (hs.length < 5) return "Common";
-  hs.sort((a, b) => a - b);
-  const hue = hs[hs.length >> 1] | 0;
-  if (hue >= 170) return "Immortal";
-  for (const [name, lo, hi] of RARITY_HUE) if (hue >= lo && hue <= hi) return name;
-  return null;
+  if (total < 5) return "Common";
+  let best = null, bestN = 0;
+  for (const [name, n] of votes) if (n > bestN) { bestN = n; best = name; }
+  return best;
 }
 
 // ---------- matcher ----------
