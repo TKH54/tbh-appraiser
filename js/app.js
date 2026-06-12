@@ -1,18 +1,23 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260614a";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260614a";
-import { T, LANGS, pickLang } from "./i18n.js?v20260614a";
+import { Matcher, _internal } from "./recognize.js?v20260614b";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260614b";
+import { T, LANGS, pickLang } from "./i18n.js?v20260614b";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
-const FEE = 0.85;                          // net after Steam's 15% fee
+// Steam fee model: the buyer pays P, the seller receives P/1.15 (5% Steam +
+// 10% game fee are added ON TOP of the seller's ask) — ≈86.96%, not 85%.
+const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.5.0";
 const CHANGELOG = [
+  { v: "1.5.0", d: "2026/6/13",
+    ja: "価格に24時間トレンド（↗ +12% など）を表示。🔒ロック中アイテムも認識できるように。手取り計算を精密化（÷1.15）。記念コインの期待値が現在価格基準にも対応",
+    en: "24h price trends (↗ +12%). Locked (🔒) items now recognized. Net proceeds use the exact ÷1.15 fee. Coin spin EV can follow current prices" },
   { v: "1.4.0", d: "2026/6/12",
     ja: "アイテムが少ない・まばらな倉庫の認識漏れを解消（7×7の升目を前提に検出するよう改良）。更新履歴を追加",
     en: "Sparse warehouses no longer drop items (detection now assumes the 7×7 grid). Added this changelog" },
@@ -29,6 +34,13 @@ const CHANGELOG = [
     ja: "公開 🎉",
     en: "Initial release 🎉" },
 ];
+// GoatCounter custom events (page views are counted by the script tag in
+// index.html; these add "actually connected / actually appraised" counts).
+// No-op when the counter script is blocked or absent.
+function gcEvent(name) {
+  try { window.goatcounter?.count?.({ path: name, title: name, event: true }); } catch (e) {}
+}
+
 function renderChangelog() {
   $("chVer").textContent = "v" + APP_VERSION;
   $("chList").innerHTML = CHANGELOG.map(e =>
@@ -69,10 +81,13 @@ async function loadData() {
   let prices = null;
   try { prices = await j("prices.json"); } catch (e) {}
   UNLOCKED = !!prices?.unlocked;   // drives the *_post copy; default mode is always 現在価格
+  let hist = null;
+  try { hist = await j("history.json"); } catch (e) {}   // hourly price points (72h)
   let seed = [];
   try { seed = await j("learned_seed.json"); } catch (e) {}   // author's pre-trained labels
   DATA = {
     meta, items, baseline: baseline.items, gacha, prices, ja, seed,
+    hist: hist?.items || null,
     matcher: new Matcher(refsBuf, refsMeta),
     vbb: variantsByBase(items),
     tpl: { w: tplMeta.w, h: tplMeta.h, data: new Uint8Array(tplBuf) },
@@ -118,6 +133,33 @@ function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
   return p.m ?? p.p ?? null;      // median of real sales when known, else lowest ask
 }
 function unitPrice(hash) { return unitPriceIn(hash, MODE); }   // main table -> global toggle
+
+// 24h price trend from history.json: current price vs the recorded point
+// nearest 24h ago (needs one within ±6h of that mark). Only meaningful on
+// the 現在価格 basis — the baseline is a frozen snapshot.
+function trend24(hash) {
+  const pts = DATA.hist?.[hash];
+  const cur = unitPriceIn(hash, "cur");
+  if (!pts || !pts.length || cur == null) return null;
+  const tgt = Date.now() / 3.6e6 - 24;       // epoch-hours, 24h back
+  let ref = null, bd = Infinity;
+  for (const [hh, p] of pts) {
+    const d = Math.abs(hh - tgt);
+    if (d < bd) { bd = d; ref = p; }
+  }
+  if (ref == null || ref <= 0 || bd > 6) return null;
+  return (cur - ref) / ref;
+}
+function trendChip(hash) {
+  if (MODE !== "cur") return "";
+  const r = trend24(hash);
+  if (r == null) return "";
+  const pct = r * 100;
+  const cls = pct >= 2 ? "up" : pct <= -2 ? "down" : "flat";
+  const arrow = pct >= 2 ? "↗" : pct <= -2 ? "↘" : "→";
+  const txt = `${arrow} ${pct >= 0 ? "+" : ""}${Math.abs(pct) >= 10 ? Math.round(pct) : pct.toFixed(1)}%`;
+  return `<br><span class="trend ${cls}" title="${esc(t("trend_tip"))}">${txt}</span>`;
+}
 function volume(hash) {           // baseline: avg sold PER DAY pre-freeze / cur: sold in 24h
   if (MODE === "base") {
     const b = DATA.baseline[hash];
@@ -245,6 +287,7 @@ async function connect() {
   });
   applyConnState();
   setStatus(t("connected"));
+  gcEvent("connect");
 }
 
 function grabFrame() {
@@ -539,7 +582,7 @@ function renderTable() {
       <td class="l"${lux}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
         <br><span class="rar" style="color:${bc}">${esc(r.rarity || "")}</span></td>
       <td>${r.qty}</td>
-      <td>${yen(r.unit, "p0")}</td>
+      <td>${yen(r.unit, "p0")}${trendChip(r.hash)}</td>
       <td>${yen(r.net, "p0")}</td>
       <td>${yen(r.total, "p0")}</td>
       <td>${r.vol == null ? '<span class="muted">—</span>' : r.vol.toLocaleString()}</td>
@@ -604,9 +647,12 @@ function renderGacha() {
     + `<button type="button" id="gBasisBtn" class="bchip ${gcur ? "cur" : "base"}" title="${esc(t("gacha_basis_tip"))}">`
     + `${esc(gcur ? t("mode_cur") : tu("mode_base"))} ⇄</button><br>${esc(t("gacha_note"))}`;
   $("gBasisBtn").onclick = () => { GMODE = GMODE === "cur" ? "base" : "cur"; renderGacha(); };
-  // use baseline grade EVs always (current per-grade averages aren't in prices.json);
-  // coins' sell price follows the displayed basis.
-  const gradeEV = g.grade_ev_baseline;
+  // spin EV follows the basis too: on 現在価格 the bot ships per-grade current
+  // averages ("gev", grades with <3 samples omitted) — fall back per-grade to
+  // the pre-freeze baseline for the missing ones.
+  const gradeEV = (gcur && DATA.prices?.gev)
+    ? { ...g.grade_ev_baseline, ...DATA.prices.gev }
+    : g.grade_ev_baseline;
   const rows = [];
   for (const [coin, odds] of Object.entries(g.coins)) {
     const spin = Object.entries(odds).reduce((s, [gr, p]) => s + p / 100 * (gradeEV[gr] || 0), 0) * FEE;
@@ -930,6 +976,7 @@ $("capBtn").addEventListener("click", connect);
 $("scanBtn").addEventListener("click", async () => {
   if (!VIDEO) return;
   try {
+    gcEvent("scan");
     await refreshPrices();          // each appraisal prices against the latest snapshot
     await runScan(grabFrame());
   }

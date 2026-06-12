@@ -211,6 +211,9 @@
   #fbModal textarea { width:100%; height:7rem; background:#0d1117; color:#e6e9ef; border:1px solid #30363d;
                       border-radius:.5rem; padding:.5rem; font-family:inherit; font-size:.8rem; }
   footer { margin-top:2rem; padding-top:.8rem; border-top:1px solid #21262d; }
+  /* ㉑ 24h trend chip under the unit price */
+  .trend { font-size:.64rem; font-weight:700; letter-spacing:.02em; }
+  .trend.up { color:#7ee787; } .trend.down { color:#ff7b72; } .trend.flat { color:#8b93a7; }
   /* changelog (⑳): a few entries visible, the rest behind a scroll */
   #chList { max-height:8.5rem; overflow-y:auto; border:1px solid #21262d;
             border-radius:8px; padding:.15rem .7rem; }
@@ -333,6 +336,10 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260614a"></script>
+<script type="module" src="js/app.js?v20260614b"></script>
+<!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
+     Dashboard: https://tbh-appraiser.goatcounter.com -->
+<script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
 </body>
 </html>

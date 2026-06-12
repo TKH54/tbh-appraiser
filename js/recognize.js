@@ -228,13 +228,49 @@ function vecFromItem(item) {
   return { vec, valid, red: rred };
 }
 
+// In-game item LOCK overlays a padlock on the cell's top-right corner; it
+// joins the sprite's tight-crop bounding box and wrecks the signature. Blank
+// that corner so a lock-free variant can enter the ensemble (min over
+// variants → harmless for unlocked items, rescues locked ones).
+function blankLockCorner(cell) {
+  const { w, h } = cell;
+  const out = new Uint8Array(cell.data);
+  const x0 = Math.floor(w * 0.64), y1 = Math.ceil(h * 0.36);
+  for (let y = 0; y < y1; y++) for (let x = x0; x < w; x++) {
+    const i = (y * w + x) * 3;
+    out[i] = out[i + 1] = out[i + 2] = 0;
+  }
+  return { w, h, data: out };
+}
+
+// Companion to blankLockCorner for sprites that genuinely REACH the corner
+// (diagonal swords/bows): instead of erasing pixels, exclude the 32×32
+// signature's top-right from scoring on BOTH sides (reuses the red-mask
+// exclusion path in Matcher._scoreInto).
+function maskCornerSig(sig) {
+  const red = new Uint8Array(sig.red);
+  const valid = new Uint8Array(sig.valid);
+  for (let y = 0; y < 12; y++) for (let x = 20; x < 32; x++) {
+    red[y * 32 + x] = 1; valid[y * 32 + x] = 0;
+  }
+  return { vec: sig.vec, valid, red };
+}
+
 // matcher.py cell_variants: extraction ENSEMBLE (cheap-first generator).
 function* cellVariants(cell) {
   const base = extractFlood(cell);
-  yield vecFromItem(base);
+  const vBase = vecFromItem(base);
+  yield vBase;
   yield vecFromItem(keepMainBlob(base));
+  // lock-tolerant variants (see blankLockCorner / maskCornerSig)
+  const noLock = extractFlood(blankLockCorner(cell));
+  yield vecFromItem(noLock);
+  yield vecFromItem(keepMainBlob(noLock));
+  yield maskCornerSig(vBase);
+  yield maskCornerSig(vecFromItem(noLock));
   const more = [extractFlood(cell, 0.10, 35),
-               extractTwotone(cell, 40), extractTwotone(cell, 60), extractTwotone(cell, 85)];
+               extractTwotone(cell, 40), extractTwotone(cell, 60), extractTwotone(cell, 85),
+               extractTwotone(blankLockCorner(cell), 60)];
   for (const it of more) { yield vecFromItem(it); yield vecFromItem(keepMainBlob(it)); }
 }
 

@@ -62,11 +62,13 @@ jobs:
           # scratch every run — never rebase it (conflicts killed run 10:06Z);
           # instead take the remote tip and lay the fresh snapshot on top.
           cp data/prices.json /tmp/prices.json
+          cp data/history.json /tmp/history.json
           for i in 1 2 3; do
             git fetch origin "${GITHUB_REF_NAME}"
             git reset --hard "origin/${GITHUB_REF_NAME}"
             cp /tmp/prices.json data/prices.json
-            git add data/prices.json
+            cp /tmp/history.json data/history.json
+            git add data/prices.json data/history.json
             # always create a commit — an empty keepalive keeps the chain alive
             # through Steam outages (any push to main fires the next link)
             git diff --cached --quiet && git commit --allow-empty -m "price keepalive" \

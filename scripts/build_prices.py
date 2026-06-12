@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +23,7 @@ import requests
 
 APPID = 3678970
 OUT = Path(__file__).resolve().parent.parent / "data" / "prices.json"
+HIST = Path(__file__).resolve().parent.parent / "data" / "history.json"
 
 S = requests.Session()
 S.headers.update({"User-Agent": "tbh-appraiser-price-snapshot/1.0 (polite; 1 req/5s)"})
@@ -144,6 +146,52 @@ def detect_unlocked(items: dict[str, dict]) -> bool:
     return prev_unlocked or n >= 320 or (prev_n is not None and n >= prev_n + 30)
 
 
+def display_price(v: dict, rate: float):
+    """The price the site shows: median of real sales when known, else lowest ask."""
+    return v.get("m") or round(v["usd"] * rate, 1)
+
+
+def update_history(items: dict[str, dict], rate: float) -> None:
+    """Hourly per-item price points, pruned to 72h — drives the site's 24h
+    trend arrows. Format: {"items": {hash: [[epochHour, jpy], ...]}}."""
+    now_h = int(time.time() // 3600)
+    try:
+        hist = json.loads(HIST.read_text(encoding="utf-8"))
+    except Exception:
+        hist = {"items": {}}
+    hi = hist.setdefault("items", {})
+    for hn, v in items.items():
+        price = display_price(v, rate)
+        if not price:
+            continue
+        pts = hi.setdefault(hn, [])
+        if pts and pts[-1][0] == now_h:
+            pts[-1][1] = price          # refine this hour's point on every run
+        else:
+            pts.append([now_h, price])
+    cutoff = now_h - 72
+    for hn in list(hi):
+        hi[hn] = [pt for pt in hi[hn] if pt[0] >= cutoff]
+        if not hi[hn]:
+            del hi[hn]
+    HIST.write_text(json.dumps(hist, separators=(",", ":")), encoding="utf-8")
+
+
+def grade_averages(items: dict[str, dict], rate: float) -> dict:
+    """Per-grade mean of CURRENT prices over ' (Grade) A' gear — the coin-gacha
+    spin EV's 現在価格 basis. Grades with <3 listed samples are omitted (the
+    site falls back to the pre-freeze baseline for those)."""
+    vals = defaultdict(list)
+    for hn, v in items.items():
+        m = re.match(r"^.* \((\w+)\) A$", hn)
+        if not m:
+            continue
+        price = display_price(v, rate)
+        if price:
+            vals[m.group(1)].append(price)
+    return {g: round(sum(xs) / len(xs), 2) for g, xs in vals.items() if len(xs) >= 3}
+
+
 def fetch_fx() -> dict:
     """USD-based fx for displaying prices in each UI language's currency
     (JPY/CNY/TWD/KRW/RUB). Free endpoint, no key; falls back to static rates."""
@@ -166,10 +214,12 @@ def main() -> None:
     rate = derive_rate(items)
     unlocked = detect_unlocked(items)      # before enrich: reads previous OUT
     enrich_volumes(items)
+    update_history(items, rate)
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rate": rate,
         "unlocked": unlocked,
+        "gev": grade_averages(items, rate),
         "fx": fetch_fx(),
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],
                       **({"m": v["m"]} if "m" in v else {}),
