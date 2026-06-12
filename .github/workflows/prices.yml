@@ -1,56 +1,66 @@
-# Two-tier price refresh (⑨ near-real-time prices):
-#  - FAST job every 10 min: lowest ask + listing counts (~10 requests, <1 min);
-#    median/volume carried over from the last full run (24h aggregates barely
-#    move within the hour anyway).
-#  - FULL job hourly: adds per-item median + 24h sold (~20 min, 1 req/4.5s).
-# NOTE: GitHub cron is best-effort — fast runs land every 10–20 min in practice.
+# Self-chaining price refresh (⑨ near-real-time prices, no PC needed):
+# each run sleeps ~9 min, snapshots prices, then COMMITS VIA THE DEPLOY KEY
+# (SSH). Unlike GITHUB_TOKEN pushes, deploy-key pushes fire `push` events, so
+# every snapshot triggers the next run — a continuous ~10-min loop hosted
+# entirely on GitHub. GitHub's cron proved near-dead on this repo (2 fires in
+# 24h), so it remains only as a chain RESTARTER if a run ever fails to push.
+#
+# Stop the chain: Actions tab -> price-snapshot -> "..." -> Disable workflow.
+# Restart it:     enable + Run workflow (leave inputs empty).
+# Full refresh (median/volume, ~16 min) happens on the cycle where minute<10.
 name: price-snapshot
 on:
+  push:
+    branches: [main]              # the chain link: every bot (deploy-key) push fires the
+                                  # next run; human pushes just splice into the same chain
   schedule:
-    - cron: "*/10 * * * *"     # fast sweep
-    - cron: "7 * * * *"        # full refresh (offset to avoid clashing)
-  workflow_dispatch:           # manual run button + external trigger (GitHub cron
-    inputs:                    # is unreliable on this repo: 3 fires in 24h)
+    - cron: "11,41 * * * *"       # best-effort restarter only
+  workflow_dispatch:              # manual run / chain starter
+    inputs:
       force_unlocked:
         description: "market-reopened flag: 1=force on, 0=force off, empty=auto-detect"
-        required: false
-        default: ""
-      full:
-        description: "1 = full refresh (median/volume, ~20 min); empty = fast sweep"
         required: false
         default: ""
 permissions:
   contents: write
 concurrency:
-  group: prices                # fast/full never run at the same time
+  group: prices                   # exactly one running + one pending; extras are replaced
   cancel-in-progress: false
 jobs:
   snapshot:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}   # push via SSH so the push event fires
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install requests
-      - name: decide mode (full at minute 7 or full=1 dispatch, fast otherwise)
+      - name: pace the loop (~10-min cadence; immediate on manual dispatch)
+        if: github.event_name != 'workflow_dispatch'
+        run: sleep 540
+      - name: decide mode (full refresh once per hour, when minute < 10)
         id: mode
         run: |
-          if [ "$(date -u +%M)" = "07" ] || [ "${{ github.event.inputs.full }}" = "1" ]; then
+          if [ "$(date -u +%M)" -lt 10 ]; then
             echo "fast=" >> "$GITHUB_OUTPUT"
           else
             echo "fast=1" >> "$GITHUB_OUTPUT"
           fi
-      - run: python scripts/build_prices.py
+      - name: snapshot prices (failure must not break the chain)
+        run: python scripts/build_prices.py || echo "::warning::price build failed; sending keepalive"
         env:
           PRICES_FAST: ${{ steps.mode.outputs.fast }}
           FORCE_UNLOCKED: ${{ github.event.inputs.force_unlocked }}
-      - name: commit if changed
+      - name: commit and push (this push triggers the next run)
         run: |
           git config user.name "price-bot"
           git config user.email "actions@users.noreply.github.com"
-          # commit FIRST — build_prices.py already modified data/prices.json, so a
-          # pull --rebase before committing aborts on the dirty working tree.
           git add data/prices.json
-          git diff --cached --quiet || git commit -m "price snapshot"
+          # always create a commit — an empty keepalive keeps the chain alive
+          # through Steam outages (any push to main fires the next link)
+          git diff --cached --quiet && git commit --allow-empty -m "price keepalive" \
+            || git commit -m "price snapshot"
           git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
