@@ -9,10 +9,14 @@ on:
   schedule:
     - cron: "*/10 * * * *"     # fast sweep
     - cron: "7 * * * *"        # full refresh (offset to avoid clashing)
-  workflow_dispatch:           # manual run button
-    inputs:
+  workflow_dispatch:           # manual run button + external trigger (GitHub cron
+    inputs:                    # is unreliable on this repo: 3 fires in 24h)
       force_unlocked:
         description: "market-reopened flag: 1=force on, 0=force off, empty=auto-detect"
+        required: false
+        default: ""
+      full:
+        description: "1 = full refresh (median/volume, ~20 min); empty = fast sweep"
         required: false
         default: ""
 permissions:
@@ -28,10 +32,10 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install requests
-      - name: decide mode (full at minute 7, fast otherwise)
+      - name: decide mode (full at minute 7 or full=1 dispatch, fast otherwise)
         id: mode
         run: |
-          if [ "$(date -u +%M)" = "07" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$(date -u +%M)" = "07" ] || [ "${{ github.event.inputs.full }}" = "1" ]; then
             echo "fast=" >> "$GITHUB_OUTPUT"
           else
             echo "fast=1" >> "$GITHUB_OUTPUT"
