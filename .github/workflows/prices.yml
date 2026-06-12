@@ -31,10 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ssh-key: ${{ secrets.DEPLOY_KEY }}   # push via SSH so the push event fires
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install requests
       - name: pace the loop (~10-min cadence; immediate on manual dispatch)
@@ -57,10 +57,21 @@ jobs:
         run: |
           git config user.name "price-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/prices.json
-          # always create a commit — an empty keepalive keeps the chain alive
-          # through Steam outages (any push to main fires the next link)
-          git diff --cached --quiet && git commit --allow-empty -m "price keepalive" \
-            || git commit -m "price snapshot"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # the run is pinned to its trigger-time SHA, so the branch tip may have
+          # moved (newer snapshot or a code push). prices.json is regenerated from
+          # scratch every run — never rebase it (conflicts killed run 10:06Z);
+          # instead take the remote tip and lay the fresh snapshot on top.
+          cp data/prices.json /tmp/prices.json
+          for i in 1 2 3; do
+            git fetch origin "${GITHUB_REF_NAME}"
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+            cp /tmp/prices.json data/prices.json
+            git add data/prices.json
+            # always create a commit — an empty keepalive keeps the chain alive
+            # through Steam outages (any push to main fires the next link)
+            git diff --cached --quiet && git commit --allow-empty -m "price keepalive" \
+              || git commit -m "price snapshot"
+            git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            sleep 5
+          done
+          echo "::error::push failed 3 times"; exit 1
