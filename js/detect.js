@@ -6,7 +6,7 @@
 // grayscale pyramid first and refine the best candidate at full resolution
 // (same result as cv2 on the reference screenshot, see test_detect.js).
 
-import { _internal } from "./recognize.js?v20260613h";
+import { _internal } from "./recognize.js?v20260613i";
 const { bgr2hsv } = _internal;
 
 // ---------- gray helpers ----------
@@ -207,7 +207,13 @@ export function detectGrid(roi, titleY, scale) {
   const bandLo = Math.min(24, Math.round(24 * scale));
   const bandHi = Math.max(64, Math.round(64 * scale));
   const colOn = new Uint8Array(W); for (let x = 0; x < W; x++) colOn[x] = colsum[x] > cmax * 0.20 ? 1 : 0;
-  const colBands = runs1d(colOn, W).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi);
+  let colBands = runs1d(colOn, W).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi);
+  // `scale` comes from the title template match and can be mis-read when the
+  // window moves to a monitor with different DPI; if the relative window
+  // rejected everything, retry with a permissive absolute one and let
+  // fitLattice + the fill checks sort out the noise.
+  if (colBands.length < 2)
+    colBands = runs1d(colOn, W).filter(([a, b]) => b - a >= 20 && b - a <= 110);
   if (colBands.length < 2) return [];
   const cw = median(colBands.map(([a, b]) => b - a));
   const colFit = fitLattice(colBands.map(([a, b]) => (a + b) >> 1));
@@ -221,7 +227,9 @@ export function detectGrid(roi, titleY, scale) {
   let rmax = 0; for (let y = 0; y < H; y++) if (rowsum[y] > rmax) rmax = rowsum[y];
   const ymin = titleY + Math.round(78 * scale);    // grid starts below the tab row
   const rowOn = new Uint8Array(H); for (let y = 0; y < H; y++) rowOn[y] = rowsum[y] > rmax * 0.12 ? 1 : 0;
-  const rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi && ((a + b) >> 1) >= ymin);
+  let rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi && ((a + b) >> 1) >= ymin);
+  if (rowBands.length < 1)
+    rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= 20 && b - a <= 110 && ((a + b) >> 1) >= ymin);
   if (rowBands.length < 1) return [];
   const rh = median(rowBands.map(([a, b]) => b - a));
   const rowFit = fitLattice(rowBands.map(([a, b]) => (a + b) >> 1));
@@ -357,7 +365,23 @@ export function cleanGrid(cells, titleY = null) {
 export function readWarehouse(img, tplImg) {
   const panel = findSoukoPanel(img, tplImg);
   if (!panel) return { panel: null, roi: null, cells: [] };
-  const roi = _internal.crop(img, panel.x0, 0, panel.x1 - panel.x0, img.h);
-  const cells = detectGrid(roi, panel.title_y, panel.scale);
+  // The crop width is title-scale × a fixed half-width, so a mis-read scale
+  // (window moved to a different-DPI monitor) or a wider panel clips the
+  // outer columns. Cells touching a crop edge mean the grid continues past
+  // it — widen that side and re-detect, up to 3 times.
+  let x0 = panel.x0, x1 = panel.x1;
+  let roi = _internal.crop(img, x0, 0, x1 - x0, img.h);
+  let cells = detectGrid(roi, panel.title_y, panel.scale);
+  for (let pass = 0; pass < 3 && cells.length; pass++) {
+    const grow = Math.max(40, Math.round((x1 - x0) * 0.2));
+    const left = cells.some(c => c.x <= 2) && x0 > 0;
+    const right = cells.some(c => c.x + c.w >= roi.w - 2) && x1 < img.w;
+    if (!left && !right) break;
+    if (left) x0 = Math.max(0, x0 - grow);
+    if (right) x1 = Math.min(img.w, x1 + grow);
+    roi = _internal.crop(img, x0, 0, x1 - x0, img.h);
+    cells = detectGrid(roi, panel.title_y, panel.scale);
+  }
+  panel.x0 = x0; panel.x1 = x1;
   return { panel, roi, cells };
 }
