@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260613d";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260613d";
-import { T, LANGS, pickLang } from "./i18n.js?v20260613d";
+import { Matcher, _internal } from "./recognize.js?v20260613e";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260613e";
+import { T, LANGS, pickLang } from "./i18n.js?v20260613e";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
