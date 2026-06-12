@@ -211,6 +211,14 @@
   #fbModal textarea { width:100%; height:7rem; background:#0d1117; color:#e6e9ef; border:1px solid #30363d;
                       border-radius:.5rem; padding:.5rem; font-family:inherit; font-size:.8rem; }
   footer { margin-top:2rem; padding-top:.8rem; border-top:1px solid #21262d; }
+  /* changelog (⑳): a few entries visible, the rest behind a scroll */
+  #chList { max-height:8.5rem; overflow-y:auto; border:1px solid #21262d;
+            border-radius:8px; padding:.15rem .7rem; }
+  .che { display:flex; gap:.6rem; padding:.38rem 0; border-bottom:1px solid #161b22;
+         font-size:.78rem; color:#c4cbd6; line-height:1.45; }
+  .che:last-child { border-bottom:none; }
+  .che b { color:#58a6ff; white-space:nowrap; font-weight:600; }
+  .che .d { color:#8b949e; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -312,12 +320,19 @@
     </div>
   </div></div>
 
+  <!-- changelog (⑳ version history; entries live in app.js CHANGELOG) -->
+  <section id="chlog">
+    <h2 style="font-size:.95rem; margin:2rem 0 .5rem;"><span id="chTitle"></span>
+      <span id="chVer" class="foot" style="font-weight:400;"></span></h2>
+    <div id="chList"></div>
+  </section>
+
   <footer class="foot">
     <div id="tPriceRefresh" style="margin-bottom:.3rem; color:#9aa4b8;"></div>
     <div id="tPrivacy"></div>
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260613j"></script>
+<script type="module" src="js/app.js?v20260614a"></script>
 </body>
 </html>

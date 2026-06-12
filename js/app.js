@@ -1,14 +1,40 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260613j";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260613j";
-import { T, LANGS, pickLang } from "./i18n.js?v20260613j";
+import { Matcher, _internal } from "./recognize.js?v20260614a";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260614a";
+import { T, LANGS, pickLang } from "./i18n.js?v20260614a";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
 const FEE = 0.85;                          // net after Steam's 15% fee
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
+
+// ---------------- changelog (⑳ page bottom; newest first) ----------------
+const APP_VERSION = "1.4.0";
+const CHANGELOG = [
+  { v: "1.4.0", d: "2026/6/12",
+    ja: "アイテムが少ない・まばらな倉庫の認識漏れを解消（7×7の升目を前提に検出するよう改良）。更新履歴を追加",
+    en: "Sparse warehouses no longer drop items (detection now assumes the 7×7 grid). Added this changelog" },
+  { v: "1.3.0", d: "2026/6/12",
+    ja: "倉庫画像の見切れを自動復元。🔒ロック中アイテムは精度が落ちる旨の注意を追加",
+    en: "Clipped warehouse captures auto-recover. Added a note that locked (🔒) items reduce accuracy" },
+  { v: "1.2.0", d: "2026/6/12",
+    ja: "「倉庫を査定する」のたびに最新価格を自動取得（価格は約10分ごとに更新されています）",
+    en: "Every appraisal now fetches the latest prices (refreshed ~every 10 minutes)" },
+  { v: "1.1.0", d: "2026/6/12",
+    ja: "マーケット再開を自動検知して表示を切替。再開後の出品制限（1人4枠・各枠8時間）の注記を追加",
+    en: "Auto-detects the market reopening; notes the post-reopen listing limit (4 slots / 8h each)" },
+  { v: "1.0.0", d: "2026/6/12",
+    ja: "公開 🎉",
+    en: "Initial release 🎉" },
+];
+function renderChangelog() {
+  $("chVer").textContent = "v" + APP_VERSION;
+  $("chList").innerHTML = CHANGELOG.map(e =>
+    `<div class="che"><b>v${e.v}</b><span class="d">${e.d}</span><span>${esc(LANG === "ja" ? e.ja : e.en)}</span></div>`
+  ).join("");
+}
 
 // ---------------- state ----------------
 let LANG = pickLang();
@@ -816,6 +842,8 @@ function applyLang() {
   $("gd3").innerHTML = t("step3").replace(/\[\?\]/g, QBADGE);
   set("guideNote", "verify_note");
   $("dmNote").textContent = t("dm_note");
+  set("chTitle", "chlog_title");
+  renderChangelog();
   $("tPriceRefresh").textContent = t("price_refresh");
   set("tPrivacy", "privacy"); set("tUnofficial", "unofficial");
   set("popTitle", "pop_title"); set("popRarLbl", "pop_rar");

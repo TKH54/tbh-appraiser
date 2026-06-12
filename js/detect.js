@@ -6,7 +6,7 @@
 // grayscale pyramid first and refine the best candidate at full resolution
 // (same result as cv2 on the reference screenshot, see test_detect.js).
 
-import { _internal } from "./recognize.js?v20260613j";
+import { _internal } from "./recognize.js?v20260614a";
 const { bgr2hsv } = _internal;
 
 // ---------- gray helpers ----------
@@ -186,6 +186,7 @@ function fitLattice(centers) {
 // 1.0 (measured on the reference sample; scan2 shows the title-match scale can
 // read 1.4 when the true scale is 1.5, so priors get a generous ±30% window).
 const GRID_COLS = 7;
+const GRID_ROWS = 7;
 const CELL_PITCH_BASE = 40;
 
 // Sparse layouts have no adjacent items, so the fitted pitch comes out as a
@@ -318,20 +319,20 @@ export function detectGrid(roi, titleY, scale, cxRoi = -1) {
   let rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= bandLo && b - a <= bandHi);
   if (rowBands.length < 1)
     rowBands = runs1d(rowOn, H).filter(([a, b]) => b - a >= 20 && b - a <= 110);
-  if (!rowBands.length) return [];
-  let rowPitch = colPitch;                 // cells are square; rows scroll, so no count prior
+  let rowPitch = colPitch;                 // cells are square
   const rFit = fixPitch(fitLattice(rowBands.map(([a, b]) => (a + b) >> 1)), colPitch);
   if (rFit && rFit.pitch >= colPitch * 0.7 && rFit.pitch <= colPitch * 1.45) rowPitch = rFit.pitch;
-  // the band WIDTH filter is what keeps non-grid UI below the panel out — only
-  // emit lattice rows inside the span of correctly-sized bands
-  const bandCs = rowBands.map(([a, b]) => (a + b) >> 1);
-  const rLo = Math.min(...bandCs) - rowPitch * 0.3, rHi = Math.max(...bandCs) + rowPitch * 0.3;
+  // Bands only inform pitch/phase — never which rows EXIST. An isolated item
+  // in an otherwise empty row falls below the relative threshold (or its
+  // saturated core is thinner than the width filter) and used to vanish; the
+  // visible grid is always 7 rows, so emit all of them and let the fill
+  // check drop the empty ones.
   const maskedRow = new Float64Array(H);
   let rIn = 0, rAll = 0;
   for (let y = ymin; y < yHi; y++) rAll += rowsum[y];
   for (const [a, b] of rowBands) for (let y = a; y < b; y++) { maskedRow[y] = rowsum[y]; rIn += rowsum[y]; }
   const rows = latticeFit(rAll > 0 && rIn / rAll >= 0.3 ? maskedRow : rowsum,
-                          ymin, yHi, rowPitch, 0, -1).filter(r => r >= rLo && r <= rHi);
+                          ymin, yHi, rowPitch, GRID_ROWS, ymin + 3.5 * rowPitch);
   if (!rows.length) return [];
   const rh = Math.round(rowPitch * 0.9);
   // emit filled cells; coverage is measured on the INNER box so a neighbour's
