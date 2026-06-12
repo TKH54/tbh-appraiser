@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260613e";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260613e";
-import { T, LANGS, pickLang } from "./i18n.js?v20260613e";
+import { Matcher, _internal } from "./recognize.js?v20260613f";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260613f";
+import { T, LANGS, pickLang } from "./i18n.js?v20260613f";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -16,7 +16,7 @@ let LANG = pickLang();
 // bot when it detects new listings being allowed again (6/15 is only the server
 // migration; reopening is announced separately). Until data loads: locked.
 let UNLOCKED = false;
-let MODE = localStorage.getItem("tbh_mode") || "base";   // 'base' | 'cur'
+let MODE = localStorage.getItem("tbh_mode") || "cur";   // 'base' | 'cur'
 let GMODE = MODE;   // gacha "sell" basis — switchable INDEPENDENTLY of the main table
 let DATA = null;        // {items, vbb, matcher, tpl, baseline, gacha, meta, prices}
 let STREAM = null, VIDEO = null;
@@ -42,9 +42,7 @@ async function loadData() {
                        j("ja_names.json")]);
   let prices = null;
   try { prices = await j("prices.json"); } catch (e) {}
-  UNLOCKED = !!prices?.unlocked;
-  // post-unlock the live market is the sensible default (unless the user chose)
-  if (UNLOCKED && !localStorage.getItem("tbh_mode")) { MODE = "cur"; GMODE = "cur"; }
+  UNLOCKED = !!prices?.unlocked;   // drives the *_post copy; default mode is always 現在価格
   let seed = [];
   try { seed = await j("learned_seed.json"); } catch (e) {}   // author's pre-trained labels
   DATA = {
