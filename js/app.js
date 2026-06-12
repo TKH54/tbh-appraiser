@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260613g";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260613g";
-import { T, LANGS, pickLang } from "./i18n.js?v20260613g";
+import { Matcher, _internal } from "./recognize.js?v20260613h";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260613h";
+import { T, LANGS, pickLang } from "./i18n.js?v20260613h";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -51,6 +51,19 @@ async function loadData() {
     vbb: variantsByBase(items),
     tpl: { w: tplMeta.w, h: tplMeta.h, data: new Uint8Array(tplBuf) },
   };
+}
+
+// re-fetch the price snapshot (~13 KB) so each appraisal uses fresh data even
+// if the tab has been open for hours (the bot refreshes it every ~10 min).
+// The unique query string skips both browser and CDN caches; on failure we
+// silently keep the copy already in memory.
+async function refreshPrices() {
+  try {
+    const r = await fetch("data/prices.json?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) return;
+    DATA.prices = await r.json();
+    UNLOCKED = !!DATA.prices?.unlocked;
+  } catch (e) {}
 }
 
 // item display name (JA names only when UI is Japanese; others use EN market name)
@@ -888,7 +901,10 @@ $("rows").addEventListener("mouseout", () => hlCells(null, false));
 $("capBtn").addEventListener("click", connect);
 $("scanBtn").addEventListener("click", async () => {
   if (!VIDEO) return;
-  try { await runScan(grabFrame()); }
+  try {
+    await refreshPrices();          // each appraisal prices against the latest snapshot
+    await runScan(grabFrame());
+  }
   catch (e) { setStatus("⚠ " + (e.message || e)); applyConnState(); console.error(e); }
 });
 
