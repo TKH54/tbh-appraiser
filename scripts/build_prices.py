@@ -11,6 +11,7 @@ Output: {"t": iso_utc, "rate": jpy_per_usd, "items": {hash: {"p": jpy, "q": list
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -92,7 +93,6 @@ def enrich_volumes(items: dict[str, dict]) -> None:
     from the previous prices.json — they are 24h aggregates and barely move
     inside an hour, while the lowest ask / listings (from the cheap sweep) get
     refreshed every run. This lets a fast job run every ~10 minutes."""
-    import os
     if os.environ.get("PRICES_FAST"):
         try:
             prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
@@ -120,6 +120,30 @@ def enrich_volumes(items: dict[str, dict]) -> None:
             v["v"] = int(vol)
 
 
+def detect_unlocked(items: dict[str, dict]) -> bool:
+    """Market-reopen flag (drives the site's pre/post-unlock copy + default mode).
+
+    Signal: the count of DISTINCT items with at least one listing. While new
+    listings are blocked the count can only fall (sold-out items never return);
+    a meaningful RISE — or topping the freeze-period ceiling — means listing
+    works again. Sticky once true (carried over), and FORCE_UNLOCKED=1/0
+    overrides everything (manual switch via workflow_dispatch).
+    """
+    force = os.environ.get("FORCE_UNLOCKED", "")
+    if force in ("0", "1"):
+        return force == "1"
+    prev_unlocked, prev_n = False, None
+    try:
+        prev = json.loads(OUT.read_text(encoding="utf-8"))
+        prev_unlocked = bool(prev.get("unlocked"))
+        prev_n = len(prev.get("items", {}))
+    except Exception:
+        pass
+    n = len(items)
+    # 238 distinct items listed during the freeze (2026-06-11), drifting down.
+    return prev_unlocked or n >= 320 or (prev_n is not None and n >= prev_n + 30)
+
+
 def fetch_fx() -> dict:
     """USD-based fx for displaying prices in each UI language's currency
     (JPY/CNY/TWD/KRW/RUB). Free endpoint, no key; falls back to static rates."""
@@ -140,10 +164,12 @@ def main() -> None:
         print("sweep failed", file=sys.stderr)
         sys.exit(1)
     rate = derive_rate(items)
+    unlocked = detect_unlocked(items)      # before enrich: reads previous OUT
     enrich_volumes(items)
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rate": rate,
+        "unlocked": unlocked,
         "fx": fetch_fx(),
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],
                       **({"m": v["m"]} if "m" in v else {}),
@@ -153,7 +179,8 @@ def main() -> None:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")),
                    encoding="utf-8")
-    print(f"prices.json: {len(items)} items, rate {rate}, {OUT.stat().st_size // 1024} KB")
+    print(f"prices.json: {len(items)} items, rate {rate}, "
+          f"unlocked {unlocked}, {OUT.stat().st_size // 1024} KB")
 
 
 if __name__ == "__main__":

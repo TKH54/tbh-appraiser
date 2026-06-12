@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260613c";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260613c";
-import { T, LANGS, pickLang } from "./i18n.js?v20260613c";
+import { Matcher, _internal } from "./recognize.js?v20260613d";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260613d";
+import { T, LANGS, pickLang } from "./i18n.js?v20260613d";
 const { vecFromItem, extractFlood, crop } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -12,11 +12,11 @@ const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- state ----------------
 let LANG = pickLang();
-// Steam sell restriction lifts 2026-06-15 (00:00 JST = 6/14 15:00 UTC). After
-// that, 現在価格 is the real tradeable market → default to it and relabel 規制前
-// as a reference (see tu() + i18n *_post strings).
-const UNLOCKED = Date.now() >= Date.UTC(2026, 5, 14, 15);
-let MODE = localStorage.getItem("tbh_mode") || (UNLOCKED ? "cur" : "base");   // 'base' | 'cur'
+// The market-reopen flag comes from prices.json ("unlocked"), set by the price
+// bot when it detects new listings being allowed again (6/15 is only the server
+// migration; reopening is announced separately). Until data loads: locked.
+let UNLOCKED = false;
+let MODE = localStorage.getItem("tbh_mode") || "base";   // 'base' | 'cur'
 let GMODE = MODE;   // gacha "sell" basis — switchable INDEPENDENTLY of the main table
 let DATA = null;        // {items, vbb, matcher, tpl, baseline, gacha, meta, prices}
 let STREAM = null, VIDEO = null;
@@ -42,6 +42,9 @@ async function loadData() {
                        j("ja_names.json")]);
   let prices = null;
   try { prices = await j("prices.json"); } catch (e) {}
+  UNLOCKED = !!prices?.unlocked;
+  // post-unlock the live market is the sensible default (unless the user chose)
+  if (UNLOCKED && !localStorage.getItem("tbh_mode")) { MODE = "cur"; GMODE = "cur"; }
   let seed = [];
   try { seed = await j("learned_seed.json"); } catch (e) {}   // author's pre-trained labels
   DATA = {
