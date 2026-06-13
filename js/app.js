@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616x";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616x";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616x";
+import { Matcher, _internal } from "./recognize.js?v20260616y";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616y";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616y";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -673,9 +673,9 @@ function renderTable() {
       <td${nameAttr}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
         <br><span class="rar" style="color:${bc}">${esc(r.rarity || "")}</span></td>
       <td>${r.qty}</td>
-      <td>${yen(r.unit, "p0")}${(() => { const tr = trendChip(r.hash), ak = lowestAskNote(r.hash); return (tr || ak) ? `<br><span class="sub">${tr}${ak}</span>` : ""; })()}</td>
-      <td>${yen(r.net, "p0")}</td>
-      <td>${yen(r.total, "p0")}</td>
+      <td class="num1">${yen(r.unit)}${(() => { const tr = trendChip(r.hash), ak = lowestAskNote(r.hash); return (tr || ak) ? `<br><span class="sub">${tr}${ak}</span>` : ""; })()}</td>
+      <td>${yen(r.net, "num")}</td>
+      <td>${yen(r.total, "num")}</td>
       <td>${r.vol == null ? '<span class="muted">—</span>' : r.vol.toLocaleString()}</td>
     </tr>`;
   }).join("");

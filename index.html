@@ -182,6 +182,10 @@
         padding:.05rem .5rem; border-radius:.6rem;
         box-shadow:0 0 .5rem rgba(255,160,0,.85), inset 0 0 .3rem rgba(255,255,255,.4); }
   @keyframes shine { 0% { background-position:0% 0; } 100% { background-position:300% 0; } }
+  /* the unit price is the headline number -> bigger & bold (colour = its tier).
+     take-home / total stay a clean, clearly-readable light grey (were dim grey). */
+  td.num1 { font-size:1.08em; font-weight:700; }
+  .num { color:#cdd6e4; font-weight:600; }
 
   .pill { display:inline-block; font-size:.62rem; padding:.08rem .45rem; border-radius:.6rem;
           margin-left:.3rem; cursor:help; }
@@ -437,7 +441,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616x"></script>
+<script type="module" src="js/app.js?v20260616y"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
