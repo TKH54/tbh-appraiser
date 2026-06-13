@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616i";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616i";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616i";
+import { Matcher, _internal } from "./recognize.js?v20260616l";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616l";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616l";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -16,8 +16,8 @@ const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 const APP_VERSION = "1.6.0";
 const CHANGELOG = [
   { v: "1.6.0", d: "2026/6/13",
-    ja: "認識精度と使いやすさを大幅改善。全画面キャプチャ対応、価格の色分け、複数ページのストック査定、最安値の併記など。みんなの修正で認識が育つ仕組みも追加。",
-    en: "Big accuracy & usability upgrade: whole-screen capture support, colour-coded prices, multi-page stock appraisal, lowest-ask display, and crowd-improved recognition." },
+    ja: "認識精度と使いやすさを大幅改善。価格の色分け、複数ページのストック査定、最安値の併記など。みんなのアイテム修正が積み重なって、全ユーザーの認識精度が上がっていく仕組みも追加。",
+    en: "Big accuracy & usability upgrade: colour-coded prices, multi-page stock appraisal, lowest-ask display, and recognition that keeps improving for all users as everyone’s item fixes add up." },
   { v: "1.5.0", d: "2026/6/12",
     ja: "価格の24時間トレンド表示、🔒ロック中アイテムの認識、手取り計算の精密化、記念コイン期待値の現在価格対応。",
     en: "24h price trends, recognition of locked (🔒) items, more precise net proceeds, and current-price coin spin EV." },
