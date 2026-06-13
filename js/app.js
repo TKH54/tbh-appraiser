@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616v";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616v";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616v";
+import { Matcher, _internal } from "./recognize.js?v20260616x";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616x";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616x";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -177,7 +177,7 @@ function trendChip(hash) {
   const cls = pct >= 2 ? "up" : pct <= -2 ? "down" : "flat";
   const arrow = pct >= 2 ? "↗" : pct <= -2 ? "↘" : "→";
   const txt = `${arrow} ${pct >= 0 ? "+" : ""}${Math.abs(pct) >= 10 ? Math.round(pct) : pct.toFixed(1)}%`;
-  return `<br><span class="trend ${cls}" title="${esc(t("trend_tip"))}">${txt}</span>`;
+  return `<span class="trend ${cls}" title="${esc(t("trend_tip"))}">${txt}</span>`;
 }
 // hybrid display: the main price is the median of real sales (p.m); when a
 // distinct current lowest ask exists, show it small underneath so it matches
@@ -189,7 +189,7 @@ function lowestAskNote(hash) {
   const shown = p.m ?? p.lm ?? null;        // the value we actually display
   if (shown == null) return "";             // we're already showing the ask itself
   if (Math.abs(p.p - shown) < Math.max(1, shown * 0.02)) return "";   // ~equal: don't clutter
-  return `<br><span class="ask" title="${esc(t("price_low_tip"))}">${esc(t("price_low"))} ${money(p.p)}</span>`;
+  return `<span class="ask" title="${esc(t("price_low_tip"))}">${esc(t("price_low"))} ${money(p.p)}</span>`;
 }
 function volume(hash) {           // baseline: avg sold PER DAY pre-freeze / cur: sold in 24h
   if (MODE === "base") {
@@ -655,17 +655,25 @@ function renderTable() {
     else if (r.unit == null) badge = `<span class="pill info" title="${esc(t(MODE === "base" ? "badge_nosale_tip" : "badge_noprice"))}">${esc(t(MODE === "base" ? "badge_nosale" : "badge_noprice"))}</span>`;
     // never-listed items have no Steam listing page -> send to a market search
     const href = neverListed ? marketSearchUrl(DATA.items[r.hash]?.base || r.name) : marketUrl(r.hash);
-    // luxurious price-tier glow behind the item name (the row's value at a glance)
+    // premium price-tier bar behind the item name: a SOLID tier-colour left edge
+    // (instant, unambiguous tier ID) + a glossy gradient tint that gets richer
+    // with value; 10k+ adds an outer glow. Intensity rises with the band so
+    // cheap items stay calm and valuable ones clearly stand out.
     const band = +bandClass(r.unit).slice(1);
-    const lux = band >= 1
-      ? ` style="background:linear-gradient(90deg, transparent, ${rgba(BAND_BRIGHT[band], 0.22)} 40%, ${rgba(BAND_BRIGHT[band], band >= 7 ? 0.48 : 0.34)}); border-radius:.35rem;"`
-      : "";
+    const col = BAND_BRIGHT[band];
+    let nameAttr = ' class="l"';
+    if (band >= 1) {
+      const hi = band >= 7;
+      const a = hi ? 0.30 : band >= 4 ? 0.21 : 0.13;     // tint near the right
+      const b = hi ? 0.58 : band >= 4 ? 0.44 : 0.30;     // deepest tint
+      nameAttr = ` class="l lux${hi ? " lux-hi" : ""}" style="--lc:${col};--la:${rgba(col, a)};--lb:${rgba(col, b)};"`;
+    }
     return `<tr data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="border:2px solid ${bc}" src="${iconUrl(r.hash)}" loading="lazy" alt=""></td>
-      <td class="l"${lux}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
+      <td${nameAttr}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
         <br><span class="rar" style="color:${bc}">${esc(r.rarity || "")}</span></td>
       <td>${r.qty}</td>
-      <td>${yen(r.unit, "p0")}${trendChip(r.hash)}${lowestAskNote(r.hash)}</td>
+      <td>${yen(r.unit, "p0")}${(() => { const tr = trendChip(r.hash), ak = lowestAskNote(r.hash); return (tr || ak) ? `<br><span class="sub">${tr}${ak}</span>` : ""; })()}</td>
       <td>${yen(r.net, "p0")}</td>
       <td>${yen(r.total, "p0")}</td>
       <td>${r.vol == null ? '<span class="muted">—</span>' : r.vol.toLocaleString()}</td>

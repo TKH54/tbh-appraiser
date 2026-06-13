@@ -180,12 +180,11 @@ def carry_last_median(items: dict[str, dict], rate: float) -> None:
         if plm is not None:
             v["lm"] = plm                          # carry the last real median
             continue
-        ask = round(v["usd"] * rate, 1)            # seed from history: walk back,
-        for _, val in reversed(hist.get(hn, [])):  # skipping the inflated ask tail
-            if val and abs(val - ask) > max(1, ask * 0.01):
-                if val < ask * 0.95:               # only if it was actually inflated
-                    v["lm"] = round(val, 1)
-                break
+        ask = round(v["usd"] * rate, 1)            # seed from history: the most
+        for _, val in reversed(hist.get(hn, [])):  # recent real value clearly below
+            if val and val <= ask * 0.6:           # the freeze-inflation plateau (the
+                v["lm"] = round(val, 1)            # inflated tail hovers near `ask`,
+                break                              # often varying a few %)
 
 
 def update_history(items: dict[str, dict], rate: float) -> None:
