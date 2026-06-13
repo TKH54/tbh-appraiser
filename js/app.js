@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616s";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616s";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616s";
+import { Matcher, _internal } from "./recognize.js?v20260616t";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616t";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616t";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -1053,10 +1053,11 @@ function applyConnState() {
   if (guide) {
     guide.classList.toggle("connected", !!STREAM && !SCAN);
   }
-  // pulse the NEXT action like the yellow review cells: connect first,
-  // then appraise; quiet once the first scan is done
+  // pulse the NEXT action like the yellow review cells: connect first, then
+  // appraise. The appraise glow returns once the current page is stocked, to
+  // nudge multi-page users to capture & appraise the next page.
   cap.classList.toggle("cta", !STREAM);
-  scan.classList.toggle("cta", !!STREAM && !SCAN);
+  scan.classList.toggle("cta", !!STREAM && (!SCAN || isStocked(SCAN)));
 }
 // hover a table row -> spotlight that item's cells in the warehouse image
 function hlCells(hash, on) {
@@ -1105,6 +1106,9 @@ function updateStockUI() {
   // pulse after a scan (not yet stocked) so multi-page users notice they can
   // stock this page — same yellow CTA glow as the connect/appraise buttons
   btn.classList.toggle("cta", !!SCAN && !stocked);
+  // once stocked, hand the glow back to the appraise button (= "now capture &
+  // appraise the next page") so the next-step nudge never vanishes
+  $("scanBtn").classList.toggle("cta", !!STREAM && (!SCAN || stocked));
   $("stockInfo").textContent = STOCKS.length ? t("stock_info").replace("{n}", STOCKS.length) : "";
   $("stockClear").textContent = STOCKS.length ? t("stock_clear") : "";
   // item-table source toggle (appears once a page is stocked)
