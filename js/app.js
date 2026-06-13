@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zo";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zo";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zo";
+import { Matcher, _internal } from "./recognize.js?v20260616zp";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zp";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zp";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -1267,10 +1267,33 @@ function renderPlan() {
   const el = $("plan"); if (!el) return;
   el.style.display = "block";
   $("planTitle").textContent = t("plan_title");
-  // pre-reopen teaser (unless forced via #planpreview / the demo) so the feature advertises itself
+  // pre-reopen teaser (unless forced via #planpreview / the demo) so the feature
+  // advertises itself. Includes a static EXAMPLE table — the real planner needs
+  // live prices+volume which don't exist during the freeze, and #demoscan can't
+  // run in production, so this is how visitors see the feature before reopening.
   if (!DATA.prices?.unlocked && location.hash !== "#planpreview" && location.hash !== "#demoscan") {
     $("planNote").textContent = "";
-    $("planBody").innerHTML = `<div class="pteaser">${esc(t("plan_teaser"))}</div>`;
+    const exItems = t("plan_ex_items") || [];
+    const ex = [
+      { i: 0, qty: 2,  take: 1, unit: 5000, net: 4340, sellH: 20, yd: 4340 },
+      { i: 1, qty: 4,  take: 3, unit: 1500, net: 1300, sellH: 8,  yd: 3900 },
+      { i: 2, qty: 12, take: 4, unit: 400,  net: 340,  sellH: 4,  yd: 1360 },
+    ];
+    const exRows = ex.map(e => `<tr>
+      <td class="l" style="font-size:.8rem;">${esc(exItems[e.i] || "")}</td>
+      <td>×${e.qty}</td>
+      <td>×${e.take}</td>
+      <td>${money(e.unit)} <span class="foot">→ ${money(e.net)}</span></td>
+      <td>${esc(fmtSellH(e.sellH))}</td>
+      <td>${yen(e.yd)}</td>
+    </tr>`).join("");
+    $("planBody").innerHTML = `
+      <div class="pteaser">${esc(t("plan_teaser"))}</div>
+      <div class="foot" style="margin:.6rem 0 .25rem;">${esc(t("plan_ex_lead"))}</div>
+      <table class="planex"><thead><tr>
+        <th class="l">${esc(t("th_item"))}</th><th>${esc(t("plan_count"))}</th><th>${esc(t("plan_today"))}</th>
+        <th>${esc(t("plan_price"))}</th><th>${esc(t("plan_sell"))}</th><th>${esc(t("plan_yield"))}</th>
+      </tr></thead><tbody>${exRows}</tbody></table>`;
     return;
   }
   if (!SCAN && !STOCKS.length) {
