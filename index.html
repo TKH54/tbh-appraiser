@@ -7,7 +7,7 @@
      injected <script> is blocked); network limited to our data, Supabase
      (insert-only crowd labels) and GoatCounter; images to self + Steam's CDN +
      blob/data (canvas & stock thumbnails). Hardens against XSS/injection. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://gc.zgo.at; connect-src 'self' https://ebtaabxbfracykncjhfc.supabase.co https://tbh-appraiser.goatcounter.com https://gc.zgo.at; img-src 'self' https://community.cloudflare.steamstatic.com data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://gc.zgo.at; connect-src 'self' https://ebtaabxbfracykncjhfc.supabase.co https://tbh-appraiser.goatcounter.com https://gc.zgo.at; img-src 'self' https://*.steamstatic.com https://*.akamaihd.net data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'; object-src 'none'">
 <title>TBH 倉庫まるごと査定 — Warehouse Appraiser for Task Bar Hero</title>
 <meta name="description" content="ゲーム画面を映すだけで Task Bar Hero の倉庫を丸ごと読み取り、全アイテムをSteamマーケット相場で自動査定する非公式ツール。インストール不要・画像はブラウザ内で処理され送信されません。">
 <style>
@@ -152,11 +152,23 @@
   .p4 { color:#ffff64; text-shadow:0 0 .3rem rgba(255,255,100,.35); } /* 2k+   rare yellow */
   .p5 { color:#ffe14a; text-shadow:0 0 .4rem rgba(255,225,74,.5); }   /* 3k+   bright yellow */
   .p6 { color:#3dd463; text-shadow:0 0 .4rem rgba(61,212,99,.55); font-weight:700; }   /* 5k+  set green */
-  .p7 { color:#ff8000; text-shadow:0 0 .5rem rgba(255,128,0,.7); font-weight:800; }    /* 10k+ LEGENDARY orange */
-  .p8 { color:#ffd700; text-shadow:0 0 .55rem rgba(255,215,0,.8); font-weight:800; }   /* 30k+ unique gold */
-  .p9 { font-weight:900; background:linear-gradient(90deg,#ff4040,#ff8000,#ffd700,#ff4040);
-        -webkit-background-clip:text; background-clip:text; color:transparent;
-        animation:shine 2.2s linear infinite; background-size:300% 100%; }      /* 100k+ */
+  /* 10k+ : escalating "luxury" — an animated shimmering gold gradient (text at
+     10k, then a shimmering pill at 30k, then the rainbow pill at 50k+) */
+  .p7 { font-weight:800; background:linear-gradient(90deg,#ff8000,#ffe680,#ff8000,#ffd166);
+        background-size:250% 100%; -webkit-background-clip:text; background-clip:text;
+        color:transparent; animation:shine 2.6s linear infinite;
+        filter:drop-shadow(0 0 .45rem rgba(255,160,0,.7)); }                  /* 10k+ shimmering gold */
+  .p8 { display:inline-block; font-weight:800; color:#1a1400; padding:.04rem .5rem; border-radius:.5rem;
+        background:linear-gradient(90deg,#ffcf40,#fff1b0,#ffcf40); background-size:250% 100%;
+        animation:shine 2.4s linear infinite;
+        box-shadow:0 0 .55rem rgba(255,200,40,.7), inset 0 0 .25rem rgba(255,255,255,.35); } /* 30k+ shimmering gold pill */
+  /* ¥50k+ : rare SPECIAL tier — a glowing gradient pill so it clearly stands
+     apart from the normal colour tiers */
+  .p9 { display:inline-block; font-weight:900; color:#1a1400;
+        background:linear-gradient(90deg,#ff4040,#ff8000,#ffd700,#ff8000,#ff4040);
+        background-size:300% 100%; animation:shine 2.2s linear infinite;
+        padding:.05rem .5rem; border-radius:.6rem;
+        box-shadow:0 0 .5rem rgba(255,160,0,.85), inset 0 0 .3rem rgba(255,255,255,.4); }
   @keyframes shine { 0% { background-position:0% 0; } 100% { background-position:300% 0; } }
 
   .pill { display:inline-block; font-size:.62rem; padding:.08rem .45rem; border-radius:.6rem;
@@ -410,7 +422,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616n"></script>
+<script type="module" src="js/app.js?v20260616s"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"

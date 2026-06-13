@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616n";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616n";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616n";
+import { Matcher, _internal } from "./recognize.js?v20260616s";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616s";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616s";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -198,7 +198,7 @@ function volume(hash) {           // baseline: avg sold PER DAY pre-freeze / cur
 // ⑱ flashy price bands (per unit JPY, 10 tiers)
 function bandClass(v) {
   if (v == null) return "p0";
-  if (v >= 100000) return "p9";
+  if (v >= 50000) return "p9";    // ¥50k+ = rare special tier (glowing pill)
   if (v >= 30000) return "p8";
   if (v >= 10000) return "p7";
   if (v >= 5000) return "p6";
@@ -1116,9 +1116,11 @@ function updateStockUI() {
   const lit = (el, is, col) => { el.style.background = is ? col : "#21262d"; el.style.color = is ? "#fff" : "#8b93a7"; };
   lit($("srcScan"), TABLE_SRC === "scan", "#2d6cdf");
   lit($("srcStock"), TABLE_SRC === "stock", "#7048e8");
-  // Diablo tier legend: which colour means how much
+  // Diablo tier legend: which colour means how much. ¥30k+ and ¥50k+ are the
+  // rare "special" tiers — omitted here so the legend stays short; they show
+  // with their own treatment on the item itself.
   $("tierLegend").innerHTML = esc(t("tier_legend")) + " " +
-    [[1, "100"], [2, "500"], [3, "1k"], [4, "2k"], [5, "3k"], [6, "5k"], [7, "10k"], [8, "30k"], [9, "100k"]]
+    [[1, "100"], [2, "500"], [3, "1k"], [4, "2k"], [5, "3k"], [6, "5k"], [7, "10k"]]
       .map(([b, lb]) => `<span class="p${b}" style="margin-right:.4rem;">¥${lb}+</span>`).join("");
 }
 function addStock() {
