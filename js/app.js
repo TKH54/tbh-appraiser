@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616za";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616za";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616za";
+import { Matcher, _internal } from "./recognize.js?v20260616zn";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zn";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zn";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 const CHANGELOG = [
+  { v: "1.6.1", d: "2026/6/13",
+    ja: "出品プランを追加（どれを・いくらで・いくつ出せば一番稼げるか自動提案）。記念コインをストア価格に合わせ、ドロップ率を更新。売り規制中は売買判定を保留し、再開後に自動表示。",
+    en: "Added a listing planner (what to list, at what price, and how many for the best yield). Coin prices aligned to the store with updated drop rates; the sell/keep verdict is paused during the freeze and shows automatically after reopening." },
   { v: "1.6.0", d: "2026/6/13",
     ja: "認識精度と使いやすさを大幅改善。価格の色分け、複数ページのストック査定、最安値の併記など。みんなのアイテム修正が積み重なって、全ユーザーの認識精度が上がっていく仕組みも追加。",
     en: "Big accuracy & usability upgrade: colour-coded prices, multi-page stock appraisal, lowest-ask display, and recognition that keeps improving for all users as everyone’s item fixes add up." },
@@ -746,20 +749,31 @@ function renderGacha() {
     : g.grade_ev_baseline;
   const rows = [];
   for (const [coin, odds] of Object.entries(g.coins)) {
-    const spin = Object.entries(odds).reduce((s, [gr, p]) => s + p / 100 * (gradeEV[gr] || 0), 0) * FEE;
+    // show Steam market prices (gross) so they match the store; the 15% sell fee
+    // hits BOTH spin gear and the coin equally, so the verdict is unchanged.
+    const spin = Object.entries(odds).reduce((s, [gr, p]) => s + p / 100 * (gradeEV[gr] || 0), 0);
     const sellU = unitPriceIn(coin, GMODE);
-    const sell = sellU != null ? sellU * FEE : null;
+    const sell = sellU != null ? sellU : null;
     rows.push({ coin, spin, sell });
   }
+  // sell-freeze gate: while you can't list, a 回す/売る verdict isn't actionable
+  // (and the freeze price will normalize on reopening), so show 回す EV only and
+  // mark selling as locked. The full comparison activates once trading reopens.
+  const sellable = !!DATA.prices?.unlocked || location.hash === "#demoscan" || location.hash === "#planpreview";
   $("gRows").innerHTML = rows.map(r => {
     const spinWins = r.sell == null || r.spin > r.sell;
+    const sellCell = !sellable ? '<span class="muted">—</span>'
+      : (r.sell == null ? `<span class="muted">${esc(t("gacha_noprice"))}</span>`
+                        : yen(r.sell) + `<span class="foot">${esc(t("gacha_per"))}</span>`);
+    const verdict = !sellable ? `<span class="muted">${esc(t("gacha_locked"))}</span>`
+      : (spinWins ? `<span class="verdict-spin">🎰 ${esc(t("gacha_verdict_spin"))}</span>`
+                  : `<span class="verdict-sell">💰 ${esc(t("gacha_verdict_sell"))}</span>`);
     return `<tr data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.coin)}" loading="lazy" alt="">
         <a class="name" href="${marketUrl(r.coin)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.coin))}</a></td>
       <td>${yen(r.spin)}<span class="foot">${esc(t("gacha_per"))}</span></td>
-      <td>${r.sell == null ? '<span class="muted">—</span>' : yen(r.sell) + `<span class="foot">${esc(t("gacha_per"))}</span>`}</td>
-      <td class="l">${spinWins ? `<span class="verdict-spin">🎰 ${esc(t("gacha_verdict_spin"))}</span>`
-                               : `<span class="verdict-sell">💰 ${esc(t("gacha_verdict_sell"))}</span>`}</td>
+      <td>${sellCell}</td>
+      <td class="l">${verdict}</td>
     </tr>`;
   }).join("");
 }
@@ -964,7 +978,7 @@ function applyMode() {
 function setMode(m) {
   MODE = m;
   localStorage.setItem("tbh_mode", m);
-  applyMode(); renderTable(); renderGacha();
+  applyMode(); renderTable(); renderGacha(); renderPlan();
   if (SCAN) drawOverlays();        // cell borders are price-band coloured
 }
 $("modeCur").addEventListener("click", () => setMode("cur"));
@@ -979,6 +993,8 @@ function applyLang() {
   $("capBtn").textContent = t("capture_btn");
   $("capBtn").title = t("capture_help");
   $("scanBtn").textContent = STREAM ? t("rescan_btn") : t("scan_btn");
+  $("planJump").textContent = t("plan_btn");
+  $("planTop").textContent = t("plan_top");
   $("modeCur").textContent = t("mode_cur");
   $("modeBase").textContent = tu("mode_base");
   $("modeBase").title = tu("mode_base_tip");
@@ -1010,7 +1026,7 @@ function applyLang() {
   $("fbText").placeholder = t("fb_placeholder");
   $("legend").innerHTML = `<span class="hint">${withQ("review_hint")}</span>`;
   $("heroCap").textContent = t("hero_cap");
-  if (DATA) { applyMode(); renderTable(); renderGacha(); }
+  if (DATA) { applyMode(); renderTable(); renderGacha(); renderPlan(); }
 }
 const sel = $("langSel");
 for (const [code, label] of LANGS) {
@@ -1082,13 +1098,22 @@ function hlCells(hash, on) {
     o.classList.toggle("dim", on && !!hash && o.dataset.hash !== hash);
   });
 }
-$("rows").addEventListener("mouseover", e => {
-  const tr = e.target.closest("tr[data-hash]");
-  if (tr) hlCells(tr.dataset.hash, true);
+// hovering a row in EITHER the main table or the listing plan spotlights the
+// matching warehouse cells (delegated; planBody is re-rendered each time)
+[$("rows"), $("planBody")].forEach(el => {
+  el.addEventListener("mouseover", e => {
+    const tr = e.target.closest("tr[data-hash]");
+    if (tr) hlCells(tr.dataset.hash, true);
+  });
+  el.addEventListener("mouseout", () => hlCells(null, false));
 });
-$("rows").addEventListener("mouseout", () => hlCells(null, false));
 
 $("capBtn").addEventListener("click", connect);
+$("planJump").addEventListener("click", () => {
+  renderPlan();                                  // ensure it's up to date, then jump
+  $("plan").scrollIntoView({ behavior: "smooth", block: "start" });
+});
+$("planTop").addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
 $("scanBtn").addEventListener("click", async () => {
   if (!VIDEO) return;
   try {
@@ -1194,10 +1219,115 @@ $("stockStrip").addEventListener("click", e => {
 $("srcScan").addEventListener("click", () => { TABLE_SRC = "scan"; renderAll(); });
 $("srcStock").addEventListener("click", () => { TABLE_SRC = "stock"; renderAll(); });
 
+// ---------------- ㉒ listing-slot plan (出品プラン) ----------------
+// Reopening rule: 4 slots, 1 new listing/slot/8h (=12 listings/day, 1 unit
+// each). Smart mode ranks by a slot's daily yield (net take-home × turnover):
+// an unsold listing occupies its slot, so yield/day = net × 24/max(8h, est.
+// sell time), est. sell time = current listings ÷ sale rate. When there's no
+// sales volume yet (during the freeze / right after reopening) it falls back
+// to ranking by net take-home so the order still makes sense.
+// the plan always covers your WHOLE inventory: every stocked page + the live
+// scan pooled together (independent of the table's scan/stock toggle).
+function planCounts() {
+  const m = new Map(), seen = new Set();
+  const add = scan => {
+    if (!scan || seen.has(scan)) return; seen.add(scan);
+    for (const [h, q] of scanCounts(scan)) m.set(h, (m.get(h) || 0) + q);
+  };
+  STOCKS.forEach(st => add(st.scan));
+  add(SCAN);                                       // include current scan if not yet stocked
+  return m;
+}
+function planItems() {
+  const out = []; let anyVol = false;
+  for (const [hash, qty] of planCounts()) {        // all pages pooled
+    const unit = unitPriceIn(hash, "cur");          // sell at the CURRENT market
+    if (unit == null) continue;
+    const p = DATA.prices?.items?.[hash];
+    const net = unit * FEE;
+    const v = p?.v || 0; if (v > 0) anyVol = true;
+    const sellH = v > 0 ? (p?.q || 0) / (v / 24) : Infinity;
+    // one slot can post a new listing every 8h => at most 3/day, fewer if the
+    // item sells slower; capped by how many you actually own.
+    const turnover = v > 0 ? 24 / Math.max(8, sellH) : 0;   // realistic listings/day per slot
+    const dailyCap = Math.min(qty, Math.max(1, Math.round(turnover)));
+    const yieldDay = net * Math.min(qty, turnover);         // stock-capped daily yield
+    out.push({ hash, qty, unit, net, sellH, dailyCap, yieldDay });
+  }
+  const smart = anyVol;                            // no volume -> fall back to net rank
+  out.sort((a, b) => smart ? b.yieldDay - a.yieldDay : b.net - a.net);
+  return { smart, rows: out };
+}
+function fmtSellH(h) {
+  if (h === Infinity || h > 72) return t("plan_slow");
+  if (h <= 1) return t("plan_fast");
+  return "~" + Math.ceil(h) + "h";
+}
+function renderPlan() {
+  const el = $("plan"); if (!el) return;
+  el.style.display = "block";
+  $("planTitle").textContent = t("plan_title");
+  // pre-reopen teaser (unless forced via #planpreview / the demo) so the feature advertises itself
+  if (!DATA.prices?.unlocked && location.hash !== "#planpreview" && location.hash !== "#demoscan") {
+    $("planNote").textContent = "";
+    $("planBody").innerHTML = `<div class="pteaser">${esc(t("plan_teaser"))}</div>`;
+    return;
+  }
+  if (!SCAN && !STOCKS.length) {
+    $("planNote").textContent = "";
+    $("planBody").innerHTML = `<div class="pteaser">${esc(t("plan_scan_first"))}</div>`;
+    return;
+  }
+  const { smart, rows } = planItems();
+  $("planNote").textContent = t(smart ? "plan_note" : "plan_note_b");
+  if (!rows.length) {
+    $("planBody").innerHTML = `<div class="pteaser">${esc(t("plan_empty"))}</div>`;
+    return;
+  }
+  // allocate today's 12 listings greedily in rank order; show every item so
+  // users can see where the rest of the warehouse stands
+  let left = 12, before = 0;
+  const alloc = rows.map(r => {
+    const take = Math.min(r.qty, r.dailyCap, left); left -= take;   // realistic daily count
+    const startUnit = before; before += take;
+    return { r, take, startUnit };
+  });
+  const perDay = smart
+    ? rows.slice(0, 4).reduce((s, r) => s + r.yieldDay, 0)
+    : alloc.reduce((s, a) => s + a.r.net * a.take, 0);
+  const body = alloc.map(({ r, take, startUnit }) => {
+    const cls = take > 0 && startUnit < 4 ? "slotnow" : take === 0 ? "slotlater" : "";
+    return `<tr class="${cls}" data-hash="${esc(r.hash)}">
+      <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.hash)}" loading="lazy" alt="">
+        <a class="name" href="${marketUrl(r.hash)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.hash))}</a></td>
+      <td>×${r.qty}</td>
+      <td>${take > 0 ? "×" + take : '<span class="muted">—</span>'}</td>
+      <td>${money(r.unit)} <span class="foot">→ ${money(r.net)}</span></td>
+      <td>${esc(fmtSellH(r.sellH))}</td>
+      <td>${smart ? yen(r.yieldDay) : '<span class="muted">—</span>'}</td>
+    </tr>`;
+  }).join("");
+  // plain-language action callout: the immediate 4 slots = the first 4 listing units
+  const nowItems = alloc.map(a => {
+    const n = Math.max(0, Math.min(a.startUnit + a.take, 4) - a.startUnit);
+    return n > 0 ? `${esc(dispName(a.r.hash))} ×${n}` : null;
+  }).filter(Boolean);
+  const th = (label, tip) => `<th>${esc(label)}${tip ? ` <span class="info" data-tip="${esc(tip)}">ⓘ</span>` : ""}</th>`;
+  $("planBody").innerHTML = `
+    <div class="plannow"><b>${esc(t("plan_now_label"))}</b> ${nowItems.join("　/　")}
+      <div class="foot" style="margin-top:.15rem;">${esc(t("plan_then"))}</div></div>
+    <div class="ptotal">${esc(t(smart ? "plan_perday" : "plan_total"))} <b>${money(perDay)}</b></div>
+    <table><thead><tr>
+      <th class="l">${esc(t("th_item"))}</th><th>${esc(t("plan_count"))}</th><th>${esc(t("plan_today"))}</th>
+      ${th(t("plan_price"), t("plan_price_tip"))}<th>${esc(t("plan_sell"))}</th>${th(t("plan_yield"), t("plan_yield_tip"))}
+    </tr></thead><tbody>${body}</tbody></table>
+    <div class="foot" style="margin-top:.3rem;">${esc(t("plan_now4_note"))}</div>`;
+}
+
 function renderAll() {
   // total + results table only make sense after a scan (or pooled stock pages)
   const rc = $("results"); if (rc) rc.style.display = (SCAN || STOCKS.length) ? "" : "none";
-  renderTable(); renderGacha(); updateStockUI(); renderStock();
+  renderTable(); renderGacha(); renderPlan(); updateStockUI(); renderStock();
 }
 
 // ---------------- boot ----------------

@@ -294,6 +294,16 @@
   /* trend + lowest-ask share ONE line so every row keeps a uniform height */
   .sub { display:inline-block; }
   .sub .ask { margin-left:.5rem; }
+  /* ㉒ listing-slot plan */
+  #plan .plannow { margin:.4rem 0 .6rem; padding:.55rem .85rem; border-radius:.6rem; font-size:.98rem;
+    background:rgba(46,160,67,.12); border:1px solid rgba(46,160,67,.55); }
+  #plan .plannow b { color:#7ee787; }
+  #plan .slotnow td { background:rgba(46,160,67,.12); }
+  #plan .slotlater td { opacity:.45; }
+  #plan .pteaser { padding:.7rem .9rem; border:1px dashed #30363d; border-radius:.6rem;
+                   color:#9aa4b8; font-size:.85rem; line-height:1.6; }
+  #plan .ptotal { margin:.45rem 0; font-size:.85rem; }
+  #plan .ptotal b { color:#7ee787; font-size:1.2rem; }
   /* changelog (⑳): a few entries visible, the rest behind a scroll */
   #chList { max-height:8.5rem; overflow-y:auto; border:1px solid #21262d;
             border-radius:8px; padding:.15rem .7rem; }
@@ -329,6 +339,7 @@
     <span class="seg">
       <button id="modeCur"></button><button id="modeBase"></button>
     </span>
+    <button id="planJump" style="background:linear-gradient(135deg,#a371f7,#7048e8); box-shadow:0 0 .55rem rgba(163,113,247,.55);"></button>
     <span id="status" class="foot"></span>
   </div>
 
@@ -352,7 +363,7 @@
 
   <!-- demo hero: shows what a finished appraisal looks like (hidden once you scan) -->
   <div id="hero" style="display:none; margin:.8rem 0;">
-    <img id="heroImg" src="assets/demo.png?v20260616za" alt="demo"
+    <img id="heroImg" src="assets/demo.png?v20260616zn" alt="demo"
          style="max-width:min(100%, 60rem); border-radius:.8rem; border:3px solid #7048e8;
                 box-shadow:0 0 .8rem rgba(112,72,232,.45), 0 .4rem 1.5rem rgba(0,0,0,.45);">
     <div class="foot" id="heroCap" style="margin-top:.3rem;"></div>
@@ -400,6 +411,16 @@
         <table><thead><tr>
           <th class="l">Coin</th><th id="ghSpin"></th><th id="ghSell"></th><th class="l"></th>
         </tr></thead><tbody id="gRows"></tbody></table>
+      </div>
+
+      <!-- ㉒ listing-slot plan: how to spend the 4-slot/8h reopening limit -->
+      <div id="plan" style="display:none;">
+        <div style="display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap;">
+          <h2 id="planTitle" style="margin:0;"></h2>
+          <button id="planTop" style="font-size:.85rem; padding:.4rem .9rem; background:#2d6cdf; box-shadow:0 0 .4rem rgba(45,108,223,.5);"></button>
+        </div>
+        <div class="foot" id="planNote"></div>
+        <div id="planBody"></div>
       </div>
     </div>
   </div>
@@ -451,7 +472,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616za"></script>
+<script type="module" src="js/app.js?v20260616zn"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
