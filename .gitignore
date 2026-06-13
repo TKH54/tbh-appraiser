@@ -3,3 +3,5 @@ Thumbs.db
 __pycache__/
 serve.py
 trigger_prices.sh
+data/_test/
+data/_test/

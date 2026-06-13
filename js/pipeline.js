@@ -1,8 +1,8 @@
 // Full scan pipeline: screenshot -> warehouse cells -> identified items.
 // Ports matcher.py identify() on top of detect.js + recognize.js.
 
-import { readWarehouse } from "./detect.js?v20260614c";
-import { Matcher, _internal } from "./recognize.js?v20260614c";
+import { readWarehouse } from "./detect.js?v20260616f";
+import { Matcher, _internal } from "./recognize.js?v20260616f";
 const { crop, borderRarity, vecFromItem, extractFlood, bgr2hsv } = _internal;
 
 // The red "can't equip" X (lower-right) appears ONLY on equipment — materials
@@ -44,7 +44,7 @@ export function variantsByBase(items) {
 // Matcher.appendRefs so they participate in the extraction ensemble.
 // `skips` = user "not tradeable" signatures [{sig, rarity}].
 export function identifyCell(matcher, vbb, cell, skips = []) {
-  const scored = matcher.matchTopK(cell, 8);
+  const scored = matcher.matchTopK(cell, 40);   // wide pool -> enough distinct bases for the candidate list
   const rarity = borderRarity(cell);
 
   const isMaterial = b => { const vs = vbb.get(b); return vs && vs.length === 1 && vs[0].rarity === ""; };
@@ -52,6 +52,10 @@ export function identifyCell(matcher, vbb, cell, skips = []) {
   // canonical signature for learned/skip comparison + the xred ratio
   const sig = vecFromItem(extractFlood(cell));
   let xred = 0; for (const r of sig.red) xred += r; xred /= sig.red.length;
+  // The red "can't equip" X, measured on the RAW cell's lower-right (xred above
+  // misses it: vecFromItem tight-crops the X away before resizing, so a weapon
+  // whose blade doesn't reach that corner reads xred≈0 even with the X shown).
+  const equipX = hasCantEquipX(cell);
 
   const sigDist = (a, b) => {
     let sum = 0, n = 0;
@@ -68,18 +72,35 @@ export function identifyCell(matcher, vbb, cell, skips = []) {
   // (the coin/herb attractors that garbage extractions collapse into) are
   // demoted below equipment candidates whenever the border colour was read —
   // a genuinely-matched material (d<=0.05) keeps its spot.
-  const cands = [];
+  // keep EVERY distinct base whose match is still "realistic" — conf in the UI
+  // is (1 - dist/0.16), so dist < ~0.145 means conf >~10%. The popover shows
+  // them all (scroll past 6); a 25 safety cap avoids a pathological flood.
+  const REALISTIC = 0.145;
+  let cands = [];
   const seen = new Set();
   for (const s of scored) {
     if (seen.has(s.base)) continue;
+    if (s.dist > REALISTIC) continue;
     seen.add(s.base);
     cands.push({ base: s.base, dist: +s.dist.toFixed(3), icon: s.icon,
                  variants: vbb.get(s.base) || [] });
-    if (cands.length >= 6) break;
+    if (cands.length >= 25) break;
   }
-  const adj = c => c.dist + (rarity && isMaterial(c.base) && c.dist > 0.05 ? 0.03 : 0);
+  // Demote the COIN/MATERIAL attractors in the confirm list. A genuine material
+  // matches very close (~0.003–0.012); a poorly-extracted weapon that collapses
+  // into a round coin/gem icon sits at ~0.05–0.08. So penalise material hits
+  // whose distance is above the genuine band — real materials (on a real
+  // material cell) keep their spot, attractor-coins on a weapon cell drop out.
+  const adj = c => c.dist + (isMaterial(c.base) && c.dist > 0.025 ? 0.12 : 0);
+  // The red "can't equip" X only appears on EQUIPMENT (its ABSENCE doesn't prove
+  // material — a character that CAN equip it shows no X). When present, it's a
+  // hard "definitely gear" signal: drop every material candidate, even if that
+  // leaves the list empty (better to send the user to search than offer a coin
+  // we know is wrong).
+  if (equipX) cands = cands.filter(c => !isMaterial(c.base));
   cands.sort((a, b) => adj(a) - adj(b));
-  cands.length = Math.min(cands.length, 3);
+  // a demoted attractor pushed past the realistic bar shouldn't clutter the list
+  for (let i = cands.length - 1; i >= 0; i--) if (adj(cands[i]) > REALISTIC) cands.splice(i, 1);
 
   // learned refs live INSIDE the matcher (full ensemble, like the desktop);
   // a learned hit gets a looser acceptance since it's a specific captured item
@@ -121,7 +142,7 @@ export function identifyCell(matcher, vbb, cell, skips = []) {
   }
   // Common/Uncommon/Rare equipment can't be traded
   if (NON_SELLABLE.has(rarity)) return fin({ status: "not_tradeable" });
-  if (!matched) return fin({ status: xred > 0.08 ? "ambiguous" : "unmatched" });
+  if (!matched) return fin({ status: (equipX || xred > 0.08) ? "ambiguous" : "unmatched" });
 
   const byRar = new Map(variants.map(v => [v.rarity, v]));
   if (byRar.has(rarity)) {

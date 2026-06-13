@@ -6,7 +6,7 @@
 // grayscale pyramid first and refine the best candidate at full resolution
 // (same result as cv2 on the reference screenshot, see test_detect.js).
 
-import { _internal } from "./recognize.js?v20260614c";
+import { _internal } from "./recognize.js?v20260616f";
 const { bgr2hsv } = _internal;
 
 // ---------- gray helpers ----------
@@ -98,6 +98,50 @@ function nccBest(img, tpl, wx0 = 0, wy0 = 0, wx1 = -1, wy1 = -1, integ = null, s
   return best;
 }
 
+// Like nccBest but returns the top-K spatially-separated peaks. The single
+// best coarse peak can land on the WRONG panel (e.g. the hero panel in a
+// whole-game capture outscores the small warehouse for a given template size),
+// so the coarse pass must surface several candidates and let the full-res
+// refine decide — otherwise the real warehouse is lost before refinement.
+function nccPeaks(img, tpl, integ, step, K, sep) {
+  const { w: W, h: H, g: I } = img;
+  const { w: tw, h: th, g: T } = tpl;
+  const wx1 = W - tw, wy1 = H - th;
+  if (wx1 < 0 || wy1 < 0 || tw < 2 || th < 2) return [];
+  const n = tw * th;
+  let tm = 0; for (let i = 0; i < n; i++) tm += T[i]; tm /= n;
+  const Tc = new Float32Array(n); let tden = 0;
+  for (let i = 0; i < n; i++) { Tc[i] = T[i] - tm; tden += Tc[i] * Tc[i]; }
+  tden = Math.sqrt(tden);
+  if (tden < 1e-6) return [];
+  const { S, S2 } = integ;
+  const win = (A, x, y) => A[(y + th) * (W + 1) + x + tw] - A[y * (W + 1) + x + tw]
+                         - A[(y + th) * (W + 1) + x] + A[y * (W + 1) + x];
+  const cand = [];
+  for (let y = 0; y <= wy1; y += step) {
+    for (let x = 0; x <= wx1; x += step) {
+      let cross = 0;
+      for (let ty = 0; ty < th; ty++) {
+        const ib = (y + ty) * W + x, tb = ty * tw;
+        for (let tx = 0; tx < tw; tx++) cross += Tc[tb + tx] * I[ib + tx];
+      }
+      const s1 = win(S, x, y), s2 = win(S2, x, y);
+      const iden = Math.sqrt(Math.max(0, s2 - s1 * s1 / n));
+      const score = iden < 1e-6 ? -2 : cross / (tden * iden);
+      cand.push({ score, x, y });
+    }
+  }
+  cand.sort((a, b) => b.score - a.score);
+  const peaks = [];
+  for (const c of cand) {
+    if (peaks.every(p => Math.abs(p.x - c.x) > sep || Math.abs(p.y - c.y) > sep)) {
+      peaks.push(c);
+      if (peaks.length >= K) break;
+    }
+  }
+  return peaks;
+}
+
 // ---------- panel detection (analyzer.find_souko_panel) ----------
 
 const SCALES = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.4, 1.5, 1.75, 2.0, 2.5];
@@ -107,11 +151,15 @@ export function findSoukoPanel(img, tplImg, minScore = 0.6) {
   const W = img.w, H = img.h;
   const gImg = toGray(img);
   const gTpl = toGray(tplImg);
-  // Coarse pass on a ~480px-wide pyramid level finds each scale's candidate
+  // Coarse pass on a downscaled pyramid level finds each scale's candidate
   // position; tiny coarse templates give noisy scores, so EVERY scale is then
   // re-scored at full resolution around its own candidate and the best
   // refined score wins (matches cv2's full-res multi-scale result).
-  const k = Math.min(1, 480 / W);
+  // A modest coarse level keeps it fast; robustness comes from refining the
+  // top-K coarse PEAKS per scale (not just the single best), so a small
+  // warehouse that loses the per-scale coarse max to another panel is still
+  // recovered at full resolution.
+  const k = Math.min(1, 560 / W);
   const cImg = k < 1 ? resizeGray(gImg, Math.round(W * k), Math.round(H * k)) : gImg;
   const cInteg = integralOf(cImg);
   const fInteg = integralOf(gImg);
@@ -120,15 +168,18 @@ export function findSoukoPanel(img, tplImg, minScore = 0.6) {
   for (const f of SCALES) {
     const ctw = Math.round(gTpl.w * f * k), cth = Math.round(gTpl.h * f * k);
     if (ctw < 5 || cth < 4 || ctw >= cImg.w || cth >= cImg.h) continue;
-    const c = nccBest(cImg, resizeGray(gTpl, ctw, cth), 0, 0, -1, -1, cInteg, 2);
-    if (c.score < -1) continue;
+    const sep = Math.max(4, Math.round(ctw * 0.5));
+    const peaks = nccPeaks(cImg, resizeGray(gTpl, ctw, cth), cInteg, 2, 4, sep);
     const tw = Math.max(8, Math.round(gTpl.w * f));
     const th = Math.max(8, Math.round(gTpl.h * f));
     if (tw >= W || th >= H) continue;
-    const cx0 = Math.round(c.x / k), cy0 = Math.round(c.y / k);
-    const r = nccBest(gImg, resizeGray(gTpl, tw, th),
-                      cx0 - pad, cy0 - pad, cx0 + pad, cy0 + pad, fInteg);
-    if (!best || r.score > best.score) best = { score: r.score, f, x: r.x, y: r.y, tw, th };
+    for (const c of peaks) {
+      if (c.score < -1) continue;
+      const cx0 = Math.round(c.x / k), cy0 = Math.round(c.y / k);
+      const r = nccBest(gImg, resizeGray(gTpl, tw, th),
+                        cx0 - pad, cy0 - pad, cx0 + pad, cy0 + pad, fInteg);
+      if (!best || r.score > best.score) best = { score: r.score, f, x: r.x, y: r.y, tw, th };
+    }
   }
   if (!best || best.score < minScore) return null;
   const cx = best.x + (best.tw >> 1);

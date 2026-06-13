@@ -1,10 +1,10 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260614c";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260614c";
-import { T, LANGS, pickLang } from "./i18n.js?v20260614c";
-const { vecFromItem, extractFlood, crop } = _internal;
+import { Matcher, _internal } from "./recognize.js?v20260616f";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616f";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616f";
+const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
 // Steam fee model: the buyer pays P, the seller receives P/1.15 (5% Steam +
@@ -13,11 +13,14 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 const CHANGELOG = [
+  { v: "1.6.0", d: "2026/6/13",
+    ja: "認識精度と使いやすさを大幅改善。全画面キャプチャ対応、価格の色分け、複数ページのストック査定、最安値の併記など。みんなの修正で認識が育つ仕組みも追加。",
+    en: "Big accuracy & usability upgrade: whole-screen capture support, colour-coded prices, multi-page stock appraisal, lowest-ask display, and crowd-improved recognition." },
   { v: "1.5.0", d: "2026/6/12",
-    ja: "価格に24時間トレンド（↗ +12% など）を表示 ※価格履歴の蓄積が必要なため、矢印が出るのは 6/13 夜頃から。🔒ロック中アイテムも認識できるように。手取り計算を精密化（÷1.15）。記念コインの期待値が現在価格基準にも対応",
-    en: "24h price trends (↗ +12%) — arrows appear from ~June 13 evening once history accumulates. Locked (🔒) items now recognized. Net proceeds use the exact ÷1.15 fee. Coin spin EV can follow current prices" },
+    ja: "価格の24時間トレンド表示、🔒ロック中アイテムの認識、手取り計算の精密化、記念コイン期待値の現在価格対応。",
+    en: "24h price trends, recognition of locked (🔒) items, more precise net proceeds, and current-price coin spin EV." },
   { v: "1.4.0", d: "2026/6/12",
     ja: "アイテムが少ない・まばらな倉庫の認識漏れを解消（7×7の升目を前提に検出するよう改良）。更新履歴を追加",
     en: "Sparse warehouses no longer drop items (detection now assumes the 7×7 grid). Added this changelog" },
@@ -47,6 +50,12 @@ function renderChangelog() {
     `<div class="che"><b>v${e.v}</b><span class="d">${e.d}</span><span>${esc(LANG === "ja" ? e.ja : e.en)}</span></div>`
   ).join("");
 }
+// ㉖ about / selling points (localized via i18n arrays)
+function renderAbout() {
+  $("aboutTitle").textContent = t("about_title");
+  $("aboutFeatures").innerHTML = (t("about_features") || []).map(f =>
+    `<div class="feat"><b>${esc(f[0])}</b> — ${esc(f[1])}</div>`).join("");
+}
 
 // ---------------- state ----------------
 let LANG = pickLang();
@@ -61,6 +70,9 @@ let STREAM = null, VIDEO = null;
 let SCAN = null;        // {imgW,imgH, cells:[{...item, assigned, ignored}]}
 let SORT = JSON.parse(localStorage.getItem("tbh_sort") || '{"k":"total","d":-1}');
 let POP_I = -1;
+let STOCKS = [];           // ㉔ stocked pages [{scan,url,label}] — scan is the FULL
+                           // mutable scan so a click reloads it as the editable image
+let TABLE_SRC = "scan";    // item table source: "scan" (current) | "stock" (all pages)
 
 const t = k => (T[LANG] && T[LANG][k] !== undefined) ? T[LANG][k] : T.en[k];
 const tu = k => t(UNLOCKED ? k + "_post" : k);   // post-sell-unlock variant of a label/banner
@@ -72,17 +84,21 @@ const withQ = key => esc(t(key)).replace(/\[\?\]/g, QBADGE);
 
 // ---------------- data loading ----------------
 async function loadData() {
-  const j = async f => (await fetch("data/" + f)).json();
-  const b = async f => (await fetch("data/" + f)).arrayBuffer();
+  // ?v=version on data files: when a release updates the bundled data (e.g.
+  // a new learned_seed.json), returning visitors were stuck on the browser/CDN
+  // cached copy — pin the cache key to APP_VERSION so each release refetches.
+  const j = async f => (await fetch("data/" + f + "?v=" + APP_VERSION)).json();
+  const b = async f => (await fetch("data/" + f + "?v=" + APP_VERSION)).arrayBuffer();
   const [meta, items, refsMeta, refsBuf, tplMeta, tplBuf, baseline, gacha, ja] =
     await Promise.all([j("meta.json"), j("items.json"), j("refs.json"), b("refs.bin"),
                        j("tpl.json"), b("tpl.bin"), j("baseline.json"), j("gacha.json"),
                        j("ja_names.json")]);
   let prices = null;
-  try { prices = await j("prices.json"); } catch (e) {}
+  // prices.json updates every ~10 min independently of releases -> bust by time
+  try { prices = await (await fetch("data/prices.json?t=" + Date.now(), { cache: "no-store" })).json(); } catch (e) {}
   UNLOCKED = !!prices?.unlocked;   // drives the *_post copy; default mode is always 現在価格
-  let hist = null;
-  try { hist = await j("history.json"); } catch (e) {}   // hourly price points (72h)
+  let hist = null;   // also bot-updated every ~10 min -> time-bust, not version
+  try { hist = await (await fetch("data/history.json?t=" + Date.now(), { cache: "no-store" })).json(); } catch (e) {}
   let seed = [];
   try { seed = await j("learned_seed.json"); } catch (e) {}   // author's pre-trained labels
   DATA = {
@@ -160,6 +176,16 @@ function trendChip(hash) {
   const txt = `${arrow} ${pct >= 0 ? "+" : ""}${Math.abs(pct) >= 10 ? Math.round(pct) : pct.toFixed(1)}%`;
   return `<br><span class="trend ${cls}" title="${esc(t("trend_tip"))}">${txt}</span>`;
 }
+// hybrid display: the main price is the median of real sales (p.m); when a
+// distinct current lowest ask exists, show it small underneath so it matches
+// the store page's "starting at" and tells you the list-under-this price.
+function lowestAskNote(hash) {
+  if (MODE !== "cur") return "";
+  const p = DATA.prices?.items?.[hash];
+  if (!p || p.m == null || p.p == null) return "";          // only when median is the shown value
+  if (Math.abs(p.p - p.m) < Math.max(1, p.m * 0.02)) return "";   // ~equal: don't clutter
+  return `<br><span class="ask" title="${esc(t("price_low_tip"))}">${esc(t("price_low"))} ${money(p.p)}</span>`;
+}
 function volume(hash) {           // baseline: avg sold PER DAY pre-freeze / cur: sold in 24h
   if (MODE === "base") {
     const b = DATA.baseline[hash];
@@ -236,16 +262,51 @@ function injectLearnedRefs() {
     .map(e => { const s = unpackSig(e); return { vec: s.vec, valid: s.valid, base: e.base }; });
   DATA.matcher.appendRefs(entries);
 }
-function saveLabel(cellImg, base, rarity = null) {
-  const sig = vecFromItem(extractFlood(cellImg));
+function saveLabel(cellImg, base, rarity = null, meta = {}) {
+  // store the signature at a few resampled scales so a label made at one
+  // in-game window scale still matches captures taken at a different scale
+  // (otherwise changing the scale made confirmed cells go back to "?").
   const all = loadLearned();
-  all.push({ base, rarity, ...packSig(sig) });
+  const sigs = [];
+  for (const k of [1, 0.72, 1.4]) {
+    const src = k === 1 ? cellImg
+      : resizeArea(cellImg, Math.max(8, Math.round(cellImg.w * k)), Math.max(8, Math.round(cellImg.h * k)));
+    const sig = vecFromItem(extractFlood(src));
+    sigs.push(sig);
+    all.push({ base, rarity, ...packSig(sig) });
+  }
   try { localStorage.setItem("tbh_learned", JSON.stringify(all)); } catch (e) {}
-  DATA.matcher.appendRefs([{ vec: sig.vec, valid: sig.valid, base }]);   // effective immediately
+  DATA.matcher.appendRefs(sigs.map(sig => ({ vec: sig.vec, valid: sig.valid, base })));   // effective immediately
+  uploadLabel(base, rarity, sigs[0], meta);   // ㉕ crowd-collect (gated before any reuse)
+}
+
+// ㉕ Crowd-sourced labels -> Supabase (insert-only via the public anon key).
+// Sends the user-verified (signature -> item) pair, NEVER an image. Collected
+// rows are a candidate pool only: promotion into the shipped data is gated
+// (consensus + rarity cross-check + regression test), so a wrong/malicious
+// label here cannot affect anyone else. Fire-and-forget; failures are ignored.
+const CROWD_URL = "https://ebtaabxbfracykncjhfc.supabase.co/rest/v1/labels";
+const CROWD_KEY = "sb_publishable_Y3JKuEbN5OuUeiNM2GSG_A__AMHHR-j";
+function uploadLabel(base, rarity, sig, meta = {}) {
+  try {
+    const packed = packSig(sig);                       // {v, m} base64
+    const body = {
+      base, rarity: rarity || null, border: meta.border || null,
+      sig: JSON.stringify(packed), dist: meta.dist ?? null,
+      lang: LANG, ver: APP_VERSION,
+    };
+    fetch(CROWD_URL, {
+      method: "POST", keepalive: true,
+      headers: { "Content-Type": "application/json", apikey: CROWD_KEY,
+                 Authorization: "Bearer " + CROWD_KEY, Prefer: "return=minimal" },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  } catch (e) {}
 }
 
 // ---------------- capture (㉓ one-button) ----------------
 async function connect() {
+  setStatus(t("connect_pick"));   // shown behind the browser's picker dialog
   try {
     STREAM = await navigator.mediaDevices.getDisplayMedia({
       video: { displaySurface: "window", frameRate: 5 }, audio: false,
@@ -396,7 +457,7 @@ function renderDiag(img, panel) {
     cx.beginPath(); cx.moveTo(panel.x0 * k, panel.title_y * k);
     cx.lineTo(panel.x1 * k, panel.title_y * k); cx.stroke();
   }
-  cvs.style.width = Math.min(700, cvs.width) + "px";
+  cvs.style.width = "";   // fill the fixed-width #scanBox (avoid clipping)
   $("scanBox").querySelectorAll(".ov").forEach(e => e.remove());
   // offer the FULL-RES failing frame as a PNG download for bug reports
   const full = document.createElement("canvas");
@@ -440,16 +501,20 @@ function drawScan() {
     }
   }
   cvs.getContext("2d").putImageData(im, 0, 0);
-  cvs.style.width = Math.min(560, cvs.width * 1.2) + "px";
+  // display size is fixed by #scanBox CSS (560px) and the canvas fills it via
+  // width:100%, so the on-screen size no longer follows the capture's scale
+  cvs.style.width = "";
   drawOverlays();
 }
 
 // price-band border colours for confirmed cells (index = band p0..p9)
-const BAND_BORDER = ["#3a4150", "#8ddba4", "#7ee787", "#58a6ff", "#bc8cff",
-                     "#f778ba", "#ffa657", "#ff6b6b", "#ffd166", "#ffd166"];
+const BAND_BORDER = ["#4a515c", "#e6e9ef", "#7cb4ff", "#9cc8ff", "#ffff64",
+                     "#ffe14a", "#3dd463", "#ff8000", "#ffd700", "#ff4040"];
 // brighter neon variants for the table-row glow backgrounds (派手好き向け)
-const BAND_BRIGHT = ["#9aa4b8", "#a9f0bb", "#7dffa0", "#7cc8ff", "#d9a8ff",
-                     "#ff9ad4", "#ffc27d", "#ff8d8d", "#ffe27a", "#ffe27a"];
+// Diablo tier ramp (matches .p0-.p9): gray/white/blue/blue/yellow/yellow/
+// green/ORANGE/GOLD/RED — cells and row glows use the same instinct colours
+const BAND_BRIGHT = ["#6e7681", "#e6e9ef", "#7cb4ff", "#9cc8ff", "#ffff64",
+                     "#ffe14a", "#3dd463", "#ff8000", "#ffd700", "#ff4040"];
 
 function drawOverlays() {
   const box = $("scanBox");
@@ -506,12 +571,22 @@ function addDebugSave(img) {
 }
 
 // ---------------- aggregation + table (⑲ column order, ⑱ colors) ----------------
+function scanCounts(scan) {
+  const m = new Map();
+  if (scan) for (const c of scan.cells)
+    if (c.assigned && !c.ignored) m.set(c.assigned, (m.get(c.assigned) || 0) + 1);
+  return m;
+}
 function aggregate() {
-  const counts = new Map();
-  if (!SCAN) return [];
-  for (const c of SCAN.cells) {
-    if (!c.assigned || c.ignored) continue;
-    counts.set(c.assigned, (counts.get(c.assigned) || 0) + 1);
+  // ストック合算: sum every stocked page; otherwise just the live scan
+  let counts;
+  if (TABLE_SRC === "stock" && STOCKS.length) {
+    counts = new Map();
+    for (const st of STOCKS)
+      for (const [h, q] of scanCounts(st.scan)) counts.set(h, (counts.get(h) || 0) + q);
+  } else {
+    if (!SCAN) return [];
+    counts = scanCounts(SCAN);
   }
   const rows = [];
   for (const [hash, qty] of counts) {
@@ -582,7 +657,7 @@ function renderTable() {
       <td class="l"${lux}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
         <br><span class="rar" style="color:${bc}">${esc(r.rarity || "")}</span></td>
       <td>${r.qty}</td>
-      <td>${yen(r.unit, "p0")}${trendChip(r.hash)}</td>
+      <td>${yen(r.unit, "p0")}${trendChip(r.hash)}${lowestAskNote(r.hash)}</td>
       <td>${yen(r.net, "p0")}</td>
       <td>${yen(r.total, "p0")}</td>
       <td>${r.vol == null ? '<span class="muted">—</span>' : r.vol.toLocaleString()}</td>
@@ -680,6 +755,9 @@ function openPop(i, ev) {
   // confirmed cell -> show the item's NAME as the title instead of the question
   $("popTitle").textContent = c.assigned ? dispName(c.assigned) : t("pop_title");
   $("popRar").textContent = c.border || "—";
+  // border colour unreadable -> very often a Common/Uncommon/Rare piece the
+  // hue bands missed; nudge the user toward 出品不可/無視 (friend feedback)
+  $("popIgnore").classList.toggle("suggest", !c.border);
   // thumbnail
   const th = $("popThumb");
   const cellImg = crop(SCAN.roi, c.x, c.y, c.w, c.h);
@@ -691,7 +769,8 @@ function openPop(i, ev) {
   const tcx = th.getContext("2d");
   th.width = c.w; th.height = c.h;
   tcx.putImageData(im, 0, 0);
-  // candidates — the #1 (best-match) candidate gets a highlighted frame
+  // candidates — the #1 (best-match) candidate gets a highlighted frame. All
+  // realistic matches are listed; the box scrolls past ~6 (see #popCands CSS).
   $("popCands").innerHTML = (c.candidates || []).map((cd, k) => {
     const conf = Math.max(0, Math.round((1 - cd.dist / 0.16) * 100));
     const chips = (cd.variants || []).map(v => {
@@ -722,9 +801,18 @@ function openPop(i, ev) {
 function assign(hash) {
   if (POP_I < 0) return;
   const c = SCAN.cells[POP_I];
+  // crowd signal (㉕): log a manual fix ONLY when auto-recognition actually
+  // missed — auto status wasn't "ok", or it auto-matched a DIFFERENT base.
+  // Sent to GoatCounter as a count of which items need attention (item name
+  // only — no image, no signature). Promotion to the shipped data is gated
+  // separately, so a wrong pick here can't affect anyone else.
+  const pickedBase = DATA.items[hash]?.base || hash;
+  const autoBase = c.hash ? (DATA.items[c.hash]?.base || c.hash) : null;
+  if (c.status !== "ok" || autoBase !== pickedBase) gcEvent("fix/" + pickedBase);
   c.assigned = hash; c.ignored = false;
   const cellImg = crop(SCAN.roi, c.x, c.y, c.w, c.h);
-  saveLabel(cellImg, DATA.items[hash]?.base || hash);   // ⑭ learn in-browser
+  saveLabel(cellImg, DATA.items[hash]?.base || hash, DATA.items[hash]?.rarity || null,
+            { border: c.border, dist: c.dist });   // ⑭ learn in-browser + ㉕ crowd-collect
   // propagate to identical unassigned cells in this scan
   const sig = vecFromItem(extractFlood(cellImg));
   for (const o of SCAN.cells) {
@@ -887,6 +975,10 @@ function applyLang() {
   $("gd2").querySelector(".btnref")?.classList.add("bconn"); // connect = accent gradient; appraise stays blue
   $("gd3").innerHTML = t("step3").replace(/\[\?\]/g, QBADGE);
   set("guideNote", "verify_note");
+  set("gdScale", "guide_scale");
+  set("gdPrivacy", "guide_privacy");
+  renderAbout();
+  updateStockUI();
   $("dmNote").textContent = t("dm_note");
   set("chTitle", "chlog_title");
   renderChangelog();
@@ -958,6 +1050,10 @@ function applyConnState() {
   if (guide) {
     guide.classList.toggle("connected", !!STREAM && !SCAN);
   }
+  // pulse the NEXT action like the yellow review cells: connect first,
+  // then appraise; quiet once the first scan is done
+  cap.classList.toggle("cta", !STREAM);
+  scan.classList.toggle("cta", !!STREAM && !SCAN);
 }
 // hover a table row -> spotlight that item's cells in the warehouse image
 function hlCells(hash, on) {
@@ -995,7 +1091,89 @@ document.addEventListener("paste", async e => {
   }
 });
 
-function renderAll() { renderTable(); renderGacha(); }
+// ---------------- ㉔ warehouse snapshot stock ----------------
+function isStocked(scan) { return STOCKS.some(st => st.scan === scan); }
+function updateStockUI() {
+  $("stockBar").style.display = (SCAN || STOCKS.length) ? "" : "none";
+  const btn = $("stockBtn");
+  const stocked = SCAN && isStocked(SCAN);
+  btn.disabled = !SCAN || stocked;
+  btn.textContent = stocked ? t("stock_added") : t("stock_btn");
+  // pulse after a scan (not yet stocked) so multi-page users notice they can
+  // stock this page — same yellow CTA glow as the connect/appraise buttons
+  btn.classList.toggle("cta", !!SCAN && !stocked);
+  $("stockInfo").textContent = STOCKS.length ? t("stock_info").replace("{n}", STOCKS.length) : "";
+  $("stockClear").textContent = STOCKS.length ? t("stock_clear") : "";
+  // item-table source toggle (appears once a page is stocked)
+  const seg = $("srcSeg");
+  seg.style.display = STOCKS.length ? "" : "none";
+  if (!STOCKS.length) TABLE_SRC = "scan";
+  $("srcScan").textContent = t("src_scan");
+  $("srcStock").textContent = t("src_stock").replace("{n}", STOCKS.length);
+  const lit = (el, is, col) => { el.style.background = is ? col : "#21262d"; el.style.color = is ? "#fff" : "#8b93a7"; };
+  lit($("srcScan"), TABLE_SRC === "scan", "#2d6cdf");
+  lit($("srcStock"), TABLE_SRC === "stock", "#7048e8");
+  // Diablo tier legend: which colour means how much
+  $("tierLegend").innerHTML = esc(t("tier_legend")) + " " +
+    [[1, "100"], [2, "500"], [3, "1k"], [4, "2k"], [5, "3k"], [6, "5k"], [7, "10k"], [8, "30k"], [9, "100k"]]
+      .map(([b, lb]) => `<span class="p${b}" style="margin-right:.4rem;">¥${lb}+</span>`).join("");
+}
+function addStock() {
+  if (!SCAN || isStocked(SCAN)) return;
+  const cv = $("scanCanvas");
+  cv.toBlob(b => {
+    if (!b) return;
+    STOCKS.push({ scan: SCAN, url: URL.createObjectURL(b), label: "#" + (STOCKS.length + 1) });
+    TABLE_SRC = "stock";          // adding a page = you want the combined list
+    renderStock(); renderAll();
+  }, "image/png");
+}
+// click a stocked thumbnail -> reload it as the MAIN editable warehouse image
+function loadStock(i) {
+  const st = STOCKS[i];
+  if (!st) return;
+  SCAN = st.scan;                 // same mutable object -> edits update this page
+  TABLE_SRC = "scan";             // show just this page while you edit it
+  drawScan(); renderAll();
+  $("scanWrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function renderStock() {
+  $("stockStrip").innerHTML = STOCKS.map((st, i) =>
+    `<div class="stockcard${st.scan === SCAN ? " active" : ""}" data-i="${i}" title="${esc(t("stock_edit_tip"))}">
+       <span class="cap">${esc(st.label)}</span>
+       <span class="del" data-del="${i}" title="${esc(t("stock_del_tip"))}">×</span>
+       <img src="${st.url}" alt=""></div>`).join("");
+}
+function removeStock(i) {
+  const st = STOCKS[i];
+  if (!st) return;
+  URL.revokeObjectURL(st.url);
+  STOCKS.splice(i, 1);
+  STOCKS.forEach((s, k) => { s.label = "#" + (k + 1); });   // renumber
+  if (!STOCKS.length) TABLE_SRC = "scan";
+  renderStock(); renderAll();
+}
+$("stockBtn").addEventListener("click", addStock);
+$("stockClear").addEventListener("click", e => {
+  e.preventDefault();
+  STOCKS.forEach(st => URL.revokeObjectURL(st.url));
+  STOCKS = []; TABLE_SRC = "scan";
+  renderStock(); renderAll();
+});
+$("stockStrip").addEventListener("click", e => {
+  const del = e.target.closest("[data-del]");
+  if (del) { removeStock(+del.dataset.del); return; }   // × removes that page
+  const card = e.target.closest(".stockcard");
+  if (card) loadStock(+card.dataset.i);
+});
+$("srcScan").addEventListener("click", () => { TABLE_SRC = "scan"; renderAll(); });
+$("srcStock").addEventListener("click", () => { TABLE_SRC = "stock"; renderAll(); });
+
+function renderAll() {
+  // total + results table only make sense after a scan (or pooled stock pages)
+  const rc = $("results"); if (rc) rc.style.display = (SCAN || STOCKS.length) ? "" : "none";
+  renderTable(); renderGacha(); updateStockUI(); renderStock();
+}
 
 // ---------------- boot ----------------
 applyLang();
@@ -1012,5 +1190,14 @@ setStatus("…");
 }
 // debug hook: lets a test harness drive a scan with a raw BGR image
 window.__runScan = img => runScan(img);
-loadData().then(() => { injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); })
+// #demoscan: auto-scan the bundled test capture (dev/self-verification only;
+// silently skipped when data/_test is absent, as in production)
+async function demoScan() {
+  try {
+    const m = await (await fetch("data/_test/sample.json")).json();
+    const buf = new Uint8Array(await (await fetch("data/_test/sample.bin")).arrayBuffer());
+    await runScan({ w: m.w, h: m.h, data: buf });
+  } catch (e) { console.warn("demoscan unavailable", e); }
+}
+loadData().then(() => { injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); applyConnState(); if (location.hash === "#demoscan") demoScan(); })
   .catch(e => setStatus("data load error: " + e));

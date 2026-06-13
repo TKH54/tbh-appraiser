@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TBH 倉庫まるごと査定 — Warehouse Appraiser for Task Bar Hero</title>
-<meta name="description" content="Task Bar Hero の倉庫をワンクリックで読み取り、全アイテムのSteamマーケット相場と売り規制前の平均相場を表示する非公式ツール。画像はブラウザ内で処理され送信されません。">
+<meta name="description" content="ゲーム画面を映すだけで Task Bar Hero の倉庫を丸ごと読み取り、全アイテムをSteamマーケット相場で自動査定する非公式ツール。インストール不要・画像はブラウザ内で処理され送信されません。">
 <style>
   :root { color-scheme: dark; font-size: 125%; }   /* ② global 125% */
   * { box-sizing: border-box; }
@@ -22,6 +22,10 @@
   button.accent { background:linear-gradient(135deg,#7048e8,#2d6cdf); }
   button.connected { background:#1f6f3f; }
   button.ghost { background:#21262d; color:#cdd6e4; font-weight:500; }
+  /* next-step nudge: same yellow pulse as the review cells */
+  button.cta { animation:ctaglow 1.2s ease-in-out infinite; }
+  @keyframes ctaglow { 0%,100% { box-shadow:0 0 .25rem rgba(255,214,10,.55); }
+                       50% { box-shadow:0 0 .85rem .25rem rgba(255,214,10,.95); } }
   select { background:#21262d; color:#cdd6e4; border:1px solid #30363d; border-radius:.4rem;
            padding:.35rem .5rem; font-size:.75rem; font-family:inherit; }
   .foot { color:#8b93a7; font-size:.72rem; }
@@ -44,9 +48,12 @@
   }
 
   /* capture area */
-  #scanBox { position:relative; display:inline-block; background:#000; border:1px solid #30363d;
-             border-radius:.4rem; overflow:hidden; max-width:100%; }
-  #scanCanvas { display:block; image-rendering:pixelated; max-width:100%; }
+  /* fixed display box so the warehouse image is the SAME on-screen size at any
+     in-game scale (≈ the size a 1.5-scale capture used to show); the canvas
+     fills it and overlays are %-positioned, so alignment is unaffected */
+  #scanBox { position:relative; display:block; width:560px; max-width:100%; background:#000;
+             border:1px solid #30363d; border-radius:.4rem; overflow:hidden; }
+  #scanCanvas { display:block; image-rendering:pixelated; width:100%; }
   .legend { font-size:.7rem; color:#9aa4b8; margin:.4rem 0; }
   .legend span { margin-right:.9rem; white-space:nowrap; }
   /* prominent click-to-fix hint shown above the warehouse image */
@@ -120,16 +127,19 @@
                  background:#000; vertical-align:middle; }
 
   /* ⑱ price bands — escalating flash (10 tiers) */
-  .p0 { color:#c9d1d9; }                                              /* <100   */
-  .p1 { color:#8ddba4; }                                              /* 100+   */
-  .p2 { color:#7ee787; }                                              /* 500+   */
-  .p3 { color:#58a6ff; }                                              /* 1k+    */
-  .p4 { color:#bc8cff; }                                              /* 2k+    */
-  .p5 { color:#f778ba; text-shadow:0 0 .35rem rgba(247,120,186,.45); }/* 3k+    */
-  .p6 { color:#ffa657; text-shadow:0 0 .4rem rgba(255,166,87,.5); }   /* 5k+    */
-  .p7 { color:#ff6b6b; text-shadow:0 0 .45rem rgba(255,107,107,.6); font-weight:800; } /* 10k+ */
-  .p8 { color:#ffd166; text-shadow:0 0 .5rem rgba(255,209,102,.75); font-weight:800; } /* 30k+ */
-  .p9 { font-weight:900; background:linear-gradient(90deg,#ffd166,#ff8fab,#a371f7,#6fb1ff,#7ee787);
+  /* Diablo-style tier ramp — the colours every ARPG player feels in their gut:
+     gray -> white -> blue (magic) -> yellow (rare) -> green (set) ->
+     ORANGE (legendary) -> GOLD (unique) -> RED (primal) */
+  .p0 { color:#6e7681; }                                              /* <100  trash-gray */
+  .p1 { color:#e6e9ef; }                                              /* 100+  common white */
+  .p2 { color:#7cb4ff; }                                              /* 500+  magic blue */
+  .p3 { color:#9cc8ff; text-shadow:0 0 .3rem rgba(124,180,255,.4); }  /* 1k+   strong blue */
+  .p4 { color:#ffff64; text-shadow:0 0 .3rem rgba(255,255,100,.35); } /* 2k+   rare yellow */
+  .p5 { color:#ffe14a; text-shadow:0 0 .4rem rgba(255,225,74,.5); }   /* 3k+   bright yellow */
+  .p6 { color:#3dd463; text-shadow:0 0 .4rem rgba(61,212,99,.55); font-weight:700; }   /* 5k+  set green */
+  .p7 { color:#ff8000; text-shadow:0 0 .5rem rgba(255,128,0,.7); font-weight:800; }    /* 10k+ LEGENDARY orange */
+  .p8 { color:#ffd700; text-shadow:0 0 .55rem rgba(255,215,0,.8); font-weight:800; }   /* 30k+ unique gold */
+  .p9 { font-weight:900; background:linear-gradient(90deg,#ff4040,#ff8000,#ffd700,#ff4040);
         -webkit-background-clip:text; background-clip:text; color:transparent;
         animation:shine 2.2s linear infinite; background-size:300% 100%; }      /* 100k+ */
   @keyframes shine { 0% { background-position:0% 0; } 100% { background-position:300% 0; } }
@@ -168,10 +178,29 @@
   #guide li.cur::marker { color:#2ea043; }
   #guide.connected { border-color:#2ea043; box-shadow:0 0 .6rem rgba(46,160,67,.28); }
   #guideNote { margin-top:.35rem; font-size:.82rem; color:#ffa657; font-weight:600; }
+  /* ㉖ about/features */
+  .feat { background:#161c26; border:1px solid #21262d; border-radius:.6rem; padding:.5rem .8rem; font-size:.82rem; }
+  .feat b { color:#e6e9ef; }
   /* button-name references inside the steps — each colored like its real button */
   .btnref { display:inline-block; background:#2d6cdf; color:#fff; font-weight:700;
             padding:.05rem .45rem; border-radius:.4rem; white-space:nowrap; }   /* 倉庫を査定する */
   .btnref.bconn { background:#1f6f3f; }   /* ゲーム画面に接続 = 接続ボタン(緑) */
+  .btnref.bgame { background:#8957e5; }   /* ゲーム内での操作(紫) — step1の見落とし対策 */
+  /* grade unknown -> suggest "not tradeable / ignore" in the popover */
+  #popIgnore.suggest { background:#4a3a00; color:#ffd166; border:1px solid #9e7d00;
+                       animation:qpulse 1.4s ease-in-out infinite; }
+  /* ㉔ stocked warehouse snapshots */
+  #stockStrip { display:grid; grid-template-columns:repeat(4, max-content); gap:.4rem; margin-top:.4rem; }
+  .stockcard { position:relative; }
+  .stockcard img { height:74px; display:block; cursor:pointer; border:1px solid #30363d; border-radius:.3rem; }
+  .stockcard:hover img { border-color:#6fb1ff; }
+  .stockcard.active img { border:2px solid #ffd60a; box-shadow:0 0 .4rem rgba(255,214,10,.6); }
+  .stockcard .cap { position:absolute; left:.15rem; top:.15rem; background:rgba(0,0,0,.65);
+                    color:#ffd166; font-size:.62rem; padding:.05rem .3rem; border-radius:.25rem; }
+  .stockcard .del { position:absolute; right:.1rem; top:.1rem; width:1.1rem; height:1.1rem;
+                    line-height:1rem; text-align:center; border-radius:50%; background:rgba(0,0,0,.7);
+                    color:#ff7b72; font-size:.85rem; font-weight:900; cursor:pointer; border:1px solid #ff7b7255; }
+  .stockcard .del:hover { background:#ff7b72; color:#fff; }
 
   /* popover */
   #pop { position:fixed; z-index:60; display:none; width:21rem; max-width:95vw; background:#0d1117;
@@ -183,6 +212,8 @@
   #pop .hd { display:flex; gap:.6rem; align-items:center; margin-bottom:.5rem; }
   .thumb { width:3.4rem; height:3.4rem; image-rendering:pixelated; border-radius:.3rem; background:#000;
            flex:0 0 auto; border:1px solid #30363d; }
+  /* show ~6 candidates, scroll for the rest */
+  #popCands { max-height:18.5rem; overflow-y:auto; }
   .cand { display:flex; align-items:center; gap:.5rem; padding:.4rem; border-radius:.4rem;
           margin-bottom:.3rem; background:#161c26; border:2px solid transparent; }
   .cand.top { border-color:#6fb1ff; background:#13202f;
@@ -214,6 +245,7 @@
   /* ㉑ 24h trend chip under the unit price */
   .trend { font-size:.64rem; font-weight:700; letter-spacing:.02em; }
   .trend.up { color:#7ee787; } .trend.down { color:#ff7b72; } .trend.flat { color:#8b93a7; }
+  .ask { font-size:.62rem; color:#8b93a7; }   /* lowest-ask sub-line under the median price */
   /* changelog (⑳): a few entries visible, the rest behind a scroll */
   #chList { max-height:8.5rem; overflow-y:auto; border:1px solid #21262d;
             border-radius:8px; padding:.15rem .7rem; }
@@ -250,11 +282,23 @@
 
   <div id="banner" class="base" style="display:none;"></div>
 
+  <!-- onboarding steps FIRST so a new visitor reads how-to before the demo;
+       open at first, collapses (still re-openable) after a scan -->
+  <details id="guide" open style="margin:.8rem 0;">
+    <summary id="guideTitle"></summary>
+    <ol><li id="gd1"></li><li id="gd2"></li><li id="gd3"></li></ol>
+    <div id="gdScale" style="margin:.2rem 0 .4rem; font-size:.82rem; color:#ffd166;
+         background:#2b2510; border:1px solid #5a4a1e; border-radius:.5rem; padding:.45rem .7rem;"></div>
+    <div id="gdPrivacy" style="margin:.2rem 0 .4rem; font-size:.86rem; font-weight:600; color:#aff5b4;
+         background:#11251a; border:1px solid #2ea043; border-radius:.5rem; padding:.5rem .75rem;"></div>
+    <div id="guideNote"></div>
+  </details>
+
   <!-- demo hero: shows what a finished appraisal looks like (hidden once you scan) -->
   <div id="hero" style="display:none; margin:.8rem 0;">
     <img id="heroImg" src="assets/demo.png" alt="demo"
-         style="max-width:min(100%, 60rem); border-radius:.8rem; border:1px solid #30363d;
-                box-shadow:0 .4rem 1.5rem rgba(0,0,0,.45);">
+         style="max-width:min(100%, 60rem); border-radius:.8rem; border:3px solid #7048e8;
+                box-shadow:0 0 .8rem rgba(112,72,232,.45), 0 .4rem 1.5rem rgba(0,0,0,.45);">
     <div class="foot" id="heroCap" style="margin-top:.3rem;"></div>
   </div>
 
@@ -265,17 +309,25 @@
         <div id="scanBox"><canvas id="scanCanvas"></canvas></div>
         <div class="foot" id="reviewMsg" style="margin-top:.3rem;"></div>
       </div>
+      <!-- ㉔ warehouse stock: OUTSIDE #scanWrap so the thumbnails are never
+           clipped by the warehouse image's max-height scroll area -->
+      <div id="stockBar" style="display:none; margin-top:.5rem;">
+        <button class="ghost" id="stockBtn"></button>
+        <span id="stockInfo" class="foot" style="margin-left:.4rem;"></span>
+        <a href="#" id="stockClear" class="foot" style="margin-left:.4rem;"></a>
+      </div>
+      <div id="stockStrip"></div>
     </div>
 
     <div id="resCol">
-      <!-- onboarding steps: open at first; collapses (still re-openable) after a scan -->
-      <details id="guide" open>
-        <summary id="guideTitle"></summary>
-        <ol><li id="gd1"></li><li id="gd2"></li><li id="gd3"></li></ol>
-        <div id="guideNote"></div>
-      </details>
+      <!-- results appear only after a scan (hidden on first open) -->
+      <div id="results" style="display:none;">
       <div class="total"><span id="tTotalLabel"></span>: <b id="totalVal" class="p0">—</b>
-        <span class="foot" id="netNote" style="margin-left:.5rem;"></span></div>
+        <span class="seg" id="srcSeg" style="display:none; margin-left:.6rem; vertical-align:middle;">
+          <button id="srcScan" style="font-size:.7rem; padding:.3rem .6rem;"></button><button id="srcStock" style="font-size:.7rem; padding:.3rem .6rem;"></button>
+        </span>
+        <span class="foot" id="netNote" style="margin-left:.5rem;"></span>
+        <div class="foot" id="tierLegend" style="margin-top:.15rem;"></div></div>
       <div id="topFind"></div>
       <table>
         <thead><tr>
@@ -284,6 +336,7 @@
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
+      </div>
 
       <div id="gacha" style="display:none;">
         <h2 id="gTitle"></h2>
@@ -323,6 +376,12 @@
     </div>
   </div></div>
 
+  <!-- ㉖ about / how it works + features (content in app.js ABOUT) -->
+  <section id="about">
+    <h2 style="font-size:.95rem; margin:2rem 0 .5rem;" id="aboutTitle"></h2>
+    <div id="aboutFeatures" style="display:grid; gap:.5rem; margin-bottom:.9rem;"></div>
+  </section>
+
   <!-- changelog (⑳ version history; entries live in app.js CHANGELOG) -->
   <section id="chlog">
     <h2 style="font-size:.95rem; margin:2rem 0 .5rem;"><span id="chTitle"></span>
@@ -336,7 +395,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260614c"></script>
+<script type="module" src="js/app.js?v20260616f"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
