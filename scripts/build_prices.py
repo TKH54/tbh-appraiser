@@ -147,8 +147,45 @@ def detect_unlocked(items: dict[str, dict]) -> bool:
 
 
 def display_price(v: dict, rate: float):
-    """The price the site shows: median of real sales when known, else lowest ask."""
-    return v.get("m") or round(v["usd"] * rate, 1)
+    """The price the site shows. Priority:
+      1. m  = median of recent REAL sales (Steam priceoverview) — the true value
+      2. lm = last KNOWN median, carried over. During the sell-freeze Steam stops
+              returning a median (no 24h sales) and priceoverview gives only a
+              lone, inflated lowest ask; falling back to that ask overvalues items
+              ~10x (e.g. Emerald ¥3,688 real -> ¥31,471 ask). Carrying the last
+              real median keeps the value honest until trading resumes.
+      3. lowest ask, only if we have never seen a median for this item."""
+    return v.get("m") or v.get("lm") or round(v["usd"] * rate, 1)
+
+
+def carry_last_median(items: dict[str, dict], rate: float) -> None:
+    """Persist a per-item 'last known real-sale median' (lm). A fresh median
+    becomes the new lm; when there's no fresh median (freeze), the previous lm is
+    carried forward so the displayed value never collapses to the inflated ask.
+    If neither exists yet, SEED lm from history.json — the last recorded price
+    that isn't the current (inflated) lowest ask (the pre-freeze real value)."""
+    try:
+        prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
+    except Exception:
+        prev = {}
+    try:
+        hist = json.loads(HIST.read_text(encoding="utf-8")).get("items", {})
+    except Exception:
+        hist = {}
+    for hn, v in items.items():
+        if "m" in v:
+            v["lm"] = v["m"]                       # fresh real sale -> new baseline
+            continue
+        plm = prev.get(hn, {}).get("lm")
+        if plm is not None:
+            v["lm"] = plm                          # carry the last real median
+            continue
+        ask = round(v["usd"] * rate, 1)            # seed from history: walk back,
+        for _, val in reversed(hist.get(hn, [])):  # skipping the inflated ask tail
+            if val and abs(val - ask) > max(1, ask * 0.01):
+                if val < ask * 0.95:               # only if it was actually inflated
+                    v["lm"] = round(val, 1)
+                break
 
 
 def update_history(items: dict[str, dict], rate: float) -> None:
@@ -214,6 +251,7 @@ def main() -> None:
     rate = derive_rate(items)
     unlocked = detect_unlocked(items)      # before enrich: reads previous OUT
     enrich_volumes(items)
+    carry_last_median(items, rate)         # after enrich (needs m), before history/gev
     update_history(items, rate)
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -223,6 +261,7 @@ def main() -> None:
         "fx": fetch_fx(),
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],
                       **({"m": v["m"]} if "m" in v else {}),
+                      **({"lm": v["lm"]} if "lm" in v else {}),
                       **({"v": v["v"]} if "v" in v else {})}
                   for h, v in sorted(items.items())},
     }

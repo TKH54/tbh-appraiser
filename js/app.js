@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616u";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616u";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616u";
+import { Matcher, _internal } from "./recognize.js?v20260616v";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616v";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616v";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -146,7 +146,10 @@ function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
   }
   const p = DATA.prices?.items?.[hash];
   if (!p) return null;
-  return p.m ?? p.p ?? null;      // median of real sales when known, else lowest ask
+  // median of real sales (p.m) is the true value; if Steam has no recent sales
+  // (during the sell-freeze it returns only a lone, inflated lowest ask) use the
+  // last KNOWN median (p.lm) instead of that ask; ask (p.p) only as last resort.
+  return p.m ?? p.lm ?? p.p ?? null;
 }
 function unitPrice(hash) { return unitPriceIn(hash, MODE); }   // main table -> global toggle
 
@@ -182,8 +185,10 @@ function trendChip(hash) {
 function lowestAskNote(hash) {
   if (MODE !== "cur") return "";
   const p = DATA.prices?.items?.[hash];
-  if (!p || p.m == null || p.p == null) return "";          // only when median is the shown value
-  if (Math.abs(p.p - p.m) < Math.max(1, p.m * 0.02)) return "";   // ~equal: don't clutter
+  if (!p || p.p == null) return "";
+  const shown = p.m ?? p.lm ?? null;        // the value we actually display
+  if (shown == null) return "";             // we're already showing the ask itself
+  if (Math.abs(p.p - shown) < Math.max(1, shown * 0.02)) return "";   // ~equal: don't clutter
   return `<br><span class="ask" title="${esc(t("price_low_tip"))}">${esc(t("price_low"))} ${money(p.p)}</span>`;
 }
 function volume(hash) {           // baseline: avg sold PER DAY pre-freeze / cur: sold in 24h
