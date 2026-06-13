@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616t";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616t";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616t";
+import { Matcher, _internal } from "./recognize.js?v20260616u";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616u";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616u";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -1053,11 +1053,12 @@ function applyConnState() {
   if (guide) {
     guide.classList.toggle("connected", !!STREAM && !SCAN);
   }
-  // pulse the NEXT action like the yellow review cells: connect first, then
-  // appraise. The appraise glow returns once the current page is stocked, to
-  // nudge multi-page users to capture & appraise the next page.
+  // pulse the NEXT action like the yellow review cells: connect first. Once the
+  // game screen is being shared, keep "appraise" glowing the WHOLE time — it's
+  // the main repeatable action (appraise again after every warehouse change,
+  // whether or not you stock the page).
   cap.classList.toggle("cta", !STREAM);
-  scan.classList.toggle("cta", !!STREAM && (!SCAN || isStocked(SCAN)));
+  scan.classList.toggle("cta", !!STREAM);
 }
 // hover a table row -> spotlight that item's cells in the warehouse image
 function hlCells(hash, on) {
@@ -1106,9 +1107,9 @@ function updateStockUI() {
   // pulse after a scan (not yet stocked) so multi-page users notice they can
   // stock this page — same yellow CTA glow as the connect/appraise buttons
   btn.classList.toggle("cta", !!SCAN && !stocked);
-  // once stocked, hand the glow back to the appraise button (= "now capture &
-  // appraise the next page") so the next-step nudge never vanishes
-  $("scanBtn").classList.toggle("cta", !!STREAM && (!SCAN || stocked));
+  // keep the appraise button glowing the whole time the screen is shared (it's
+  // the main repeatable action) — never let the next-step nudge vanish from it
+  $("scanBtn").classList.toggle("cta", !!STREAM);
   $("stockInfo").textContent = STOCKS.length ? t("stock_info").replace("{n}", STOCKS.length) : "";
   $("stockClear").textContent = STOCKS.length ? t("stock_clear") : "";
   // item-table source toggle (appears once a page is stocked)
