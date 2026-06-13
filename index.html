@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- CSP: scripts only from self + GoatCounter (no inline scripts exist, so an
+     injected <script> is blocked); network limited to our data, Supabase
+     (insert-only crowd labels) and GoatCounter; images to self + Steam's CDN +
+     blob/data (canvas & stock thumbnails). Hardens against XSS/injection. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://gc.zgo.at; connect-src 'self' https://ebtaabxbfracykncjhfc.supabase.co https://tbh-appraiser.goatcounter.com https://gc.zgo.at; img-src 'self' https://community.cloudflare.steamstatic.com data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'; object-src 'none'">
 <title>TBH 倉庫まるごと査定 — Warehouse Appraiser for Task Bar Hero</title>
 <meta name="description" content="ゲーム画面を映すだけで Task Bar Hero の倉庫を丸ごと読み取り、全アイテムをSteamマーケット相場で自動査定する非公式ツール。インストール不要・画像はブラウザ内で処理され送信されません。">
 <style>
@@ -405,7 +410,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616m"></script>
+<script type="module" src="js/app.js?v20260616n"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
