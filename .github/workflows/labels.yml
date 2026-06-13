@@ -1,0 +1,74 @@
+name: Promote crowd labels (PR only)
+
+# Reads crowd-sourced recognition labels from Supabase (service_role secret),
+# runs the anti-poisoning gates (consensus K=3 + conflict + redundancy +
+# already-seeded), and — if anything survives — opens a PULL REQUEST that adds
+# the survivors to data/learned_seed.json. It NEVER pushes to main: a human
+# reviews and merges. Trigger manually (Actions tab -> Run workflow); the weekly
+# cron is best-effort only (GitHub cron is unreliable on this repo).
+
+on:
+  workflow_dispatch:
+    inputs:
+      k:
+        description: "min distinct agreeing submissions to promote"
+        default: "3"
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays ~03:17 UTC, best-effort
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: promote-labels
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+      - name: Run promotion gates
+        id: promote
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" | tee /tmp/promote.log
+          {
+            echo "PR_BODY<<PREOF"
+            echo "Auto-generated from Supabase crowd labels."
+            echo "Gates passed: consensus (K), conflict, redundancy (vs bundled refs), already-seeded (vs current learned_seed)."
+            echo ""
+            echo '```'
+            cat /tmp/promote.log
+            echo '```'
+            echo ""
+            echo "**Review before merging.** This only appends entries to \`data/learned_seed.json\`; the user's LOCAL labels still override on their machine. For extra safety run the pipeline regression test in the monitor repo before merging. Price-bot snapshots touch other files, so this PR won't conflict with main."
+            echo "PREOF"
+          } >> "$GITHUB_ENV"
+      - name: Bump release so the labels reach returning visitors (only if promoted)
+        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        run: python scripts/bump_release.py
+      - name: Open PR if learned_seed.json changed
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          add-paths: |
+            data/learned_seed.json
+            js/app.js
+            js/detect.js
+            js/pipeline.js
+            js/i18n.js
+            js/recognize.js
+            index.html
+          branch: crowd-labels/auto-promote
+          delete-branch: true
+          commit-message: "Promote crowd-sourced recognition labels into learned_seed.json"
+          title: "Crowd labels: promote consensus recognition fixes"
+          body: ${{ env.PR_BODY }}
+          labels: crowd-labels
