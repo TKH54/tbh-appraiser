@@ -214,15 +214,19 @@ def update_history(items: dict[str, dict], rate: float) -> None:
 
 
 def grade_averages(items: dict[str, dict], rate: float) -> dict:
-    """Per-grade mean of CURRENT prices over ' (Grade) A' gear — the coin-gacha
-    spin EV's 現在価格 basis. Grades with <3 listed samples are omitted (the
-    site falls back to the pre-freeze baseline for those)."""
+    """Per-grade mean over ' (Grade) A' gear — the coin-gacha spin EV's 現在価格
+    basis. Only TRUSTED prices count: a real recent-sale median (m) or the last
+    known median (lm). The bare lowest ask is excluded — during the sell-freeze
+    it is wildly inflated (e.g. Dusk Bow ¥254k, Iron Plate ¥100k) and would
+    otherwise pull a whole grade's average up ~10x, inflating coin spin EVs.
+    Grades with <3 trusted samples are omitted -> the site falls back to the
+    pre-freeze baseline for those."""
     vals = defaultdict(list)
     for hn, v in items.items():
         m = re.match(r"^.* \((\w+)\) A$", hn)
         if not m:
             continue
-        price = display_price(v, rate)
+        price = v.get("m") or v.get("lm")     # trusted only; skip inflated asks
         if price:
             vals[m.group(1)].append(price)
     return {g: round(sum(xs) / len(xs), 2) for g, xs in vals.items() if len(xs) >= 3}
