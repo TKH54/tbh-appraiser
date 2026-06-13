@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616z";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616z";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616z";
+import { Matcher, _internal } from "./recognize.js?v20260616za";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616za";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616za";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -985,6 +985,7 @@ function applyLang() {
   set("tTotalLabel", "total_label"); set("netNote", "net_note");
   set("gTitle", "gacha_title"); set("gNote", "gacha_note");
   set("ghSpin", "gacha_spin"); set("ghSell", "gacha_sell");
+  $("quickSteps").innerHTML = t("steps_quick");
   set("guideTitle", "steps_title");
   $("gd1").innerHTML = t("step1");
   $("gd2").innerHTML = t("step2");                          // step2/3 carry colored <span class='btnref'>
