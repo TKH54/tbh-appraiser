@@ -100,6 +100,16 @@
   #banner.cur  { background:#1b2a1e; border:1px solid #2ea043; color:#aff5b4; }
   #banner a { color:#fff; }
 
+  /* ⓘ help marker with an INSTANT custom tooltip (native title is delayed) */
+  .info { position:relative; display:inline-block; margin-left:.2rem; cursor:help;
+          color:#ffd60a; font-weight:700; font-size:.85em; }
+  .info::after { content:attr(data-tip); position:absolute; right:0; top:135%;
+          width:max-content; max-width:15rem; white-space:normal; text-align:left;
+          background:#0d1117; border:1px solid #30363d; border-radius:.4rem; padding:.4rem .55rem;
+          font-size:.72rem; font-weight:400; color:#cdd6e4; line-height:1.5;
+          box-shadow:0 .3rem 1rem rgba(0,0,0,.55); z-index:60;
+          opacity:0; visibility:hidden; }
+  .info:hover::after { opacity:1; visibility:visible; }   /* no transition = instant */
   /* results table */
   table { width:100%; border-collapse:collapse; font-size:.82rem; }
   th, td { padding:.45rem .55rem; text-align:right; border-bottom:1px solid #21262d; white-space:nowrap; }
@@ -395,7 +405,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616f"></script>
+<script type="module" src="js/app.js?v20260616i"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"

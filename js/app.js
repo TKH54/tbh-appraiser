@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616f";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616f";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616f";
+import { Matcher, _internal } from "./recognize.js?v20260616i";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616i";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616i";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -625,8 +625,11 @@ function renderTable() {
                  vol: MODE === "base" ? t("th_vol_tip") : t("th_vol_cur_tip") };
   document.querySelectorAll("th[data-k]").forEach(th => {
     const k = th.dataset.k;
-    th.textContent = labels[k] + (SORT.k === k ? (dir > 0 ? " ▲" : " ▼") : "");
-    th.title = (tips[k] ? tips[k] + "\n" : "") + t("sort_tip");
+    const arrow = SORT.k === k ? (dir > 0 ? " ▲" : " ▼") : "";
+    // visible ⓘ marker carrying an instant custom tooltip (see .info CSS)
+    const info = tips[k] ? ` <span class="info" data-tip="${esc(tips[k])}">ⓘ</span>` : "";
+    th.innerHTML = esc(labels[k]) + arrow + info;
+    th.title = t("sort_tip");
     th.classList.toggle("on", SORT.k === k);
   });
   let total = 0;
