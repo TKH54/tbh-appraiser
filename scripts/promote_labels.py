@@ -142,6 +142,11 @@ def main() -> None:
     items = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
     bases = {v["base"] for v in items.values()}
     refs = load_refs()
+    try:                                   # English->Japanese names for a readable report
+        ja = json.loads((DATA / "ja_names.json").read_text(encoding="utf-8"))
+        ja_bases, ja_rar = ja.get("bases", {}), ja.get("rarities", {})
+    except Exception:
+        ja_bases, ja_rar = {}, {}
 
     # existing seed, indexed by base for the already-seeded gate (idempotent re-runs)
     seed = json.loads(SEED.read_text(encoding="utf-8"))
@@ -164,7 +169,7 @@ def main() -> None:
         parsed.append({"base": r["base"], "rarity": r.get("rarity"), "sig": sig})
     print(f"{len(parsed)} valid rows after catalog/format gate")
 
-    promoted, stats = [], defaultdict(int)
+    promoted, details, stats = [], [], defaultdict(int)
     by_base = defaultdict(list)
     for p in parsed:
         by_base[p["base"]].append(p)
@@ -204,22 +209,35 @@ def main() -> None:
                      "v": base64.b64encode(vu8.tobytes()).decode(),
                      "m": base64.b64encode(bits.tobytes()).decode()}
             promoted.append(entry)
+            details.append({"base": base, "rarity": rarity, "n": len(c), "total": len(group)})
             seeded[base].append(rep)        # so a second cluster of the same base dedups too
             stats["promoted"] += 1
 
-    print("gate stats:", dict(stats))
-    names = sorted({p["base"] for p in promoted})
-    print(f"-> {len(promoted)} new labels promoted, covering {len(names)} items: "
-          f"{', '.join(names) if names else '(none)'}")
+    def line_for(d: dict) -> str:
+        """One readable line per promoted item: name (JP) [rarity] — N agreed."""
+        jb, jr = ja_bases.get(d["base"]), ja_rar.get(d["rarity"] or "")
+        name = d["base"] + (f"（{jb}）" if jb else "")
+        rar = (d["rarity"] or "—") + (f"/{jr}" if jr else "")
+        return (f"- {name} [{rar}] — {d['n']}人が一致"
+                f"（この候補への投稿 {d['total']}件）")
 
-    # GitHub Actions step summary / PR body source
+    lines = [line_for(d) for d in sorted(details, key=lambda x: -x["n"])]
+    print("gate stats:", dict(stats))
+    print(f"-> {len(promoted)} new labels promoted, covering "
+          f"{len({p['base'] for p in promoted})} items"
+          + (":" if lines else ""))
+    for ln in lines:
+        print(ln)
+
+    # GitHub Actions step summary (rendered on the run page)
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
         with open(summ, "a", encoding="utf-8") as f:
             f.write(f"### crowd-label promotion\n- fetched: {len(rows)} rows\n"
                     f"- gate stats: `{dict(stats)}`\n"
-                    f"- **promoted: {len(promoted)} labels / {len(names)} items**: "
-                    f"{', '.join(names) if names else '(none)'}\n")
+                    f"- **promoted: {len(promoted)} labels**\n"
+                    + ("".join(ln + "\n" for ln in lines) if lines
+                       else "- (nothing crossed the gate)\n"))
 
     out = os.environ.get("GITHUB_OUTPUT")
     if out:
