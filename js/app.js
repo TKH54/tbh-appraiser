@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616y";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616y";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616y";
+import { Matcher, _internal } from "./recognize.js?v20260616z";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616z";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616z";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -993,6 +993,7 @@ function applyLang() {
   set("guideNote", "verify_note");
   set("gdScale", "guide_scale");
   set("gdPrivacy", "guide_privacy");
+  set("guideMoreTitle", "guide_more");
   renderAbout();
   updateStockUI();
   $("dmNote").textContent = t("dm_note");

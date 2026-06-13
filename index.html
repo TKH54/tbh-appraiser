@@ -18,7 +18,7 @@
   h1 { font-size:1.45rem; margin:0; letter-spacing:.02em;
        background:linear-gradient(90deg,#ffd166,#ff8fab,#a371f7,#6fb1ff);
        -webkit-background-clip:text; background-clip:text; color:transparent; }
-  .tagline { color:#9aa4b8; font-size:.8rem; margin:.25rem 0 1rem; }
+  .tagline { color:#cdd6e4; font-size:1rem; font-weight:500; margin:.3rem 0 1rem; line-height:1.4; }
   button { background:#2d6cdf; color:#fff; border:0; padding:.55rem 1.1rem; border-radius:.5rem;
            font-size:.85rem; cursor:pointer; font-weight:700; font-family:inherit; }
   button:hover { filter:brightness(1.12); }
@@ -330,19 +330,23 @@
 
   <!-- onboarding steps FIRST so a new visitor reads how-to before the demo;
        open at first, collapses (still re-openable) after a scan -->
-  <details id="guide" open style="margin:.8rem 0;">
+  <details id="guide" style="margin:.8rem 0;">
     <summary id="guideTitle"></summary>
     <ol><li id="gd1"></li><li id="gd2"></li><li id="gd3"></li></ol>
-    <div id="gdScale" style="margin:.2rem 0 .4rem; font-size:.82rem; color:#ffd166;
-         background:#2b2510; border:1px solid #5a4a1e; border-radius:.5rem; padding:.45rem .7rem;"></div>
     <div id="gdPrivacy" style="margin:.2rem 0 .4rem; font-size:.86rem; font-weight:600; color:#aff5b4;
          background:#11251a; border:1px solid #2ea043; border-radius:.5rem; padding:.5rem .75rem;"></div>
-    <div id="guideNote"></div>
+    <!-- edge-case caveats (scale, fix tips) collapsed so the first view stays clean -->
+    <details id="guideMore" style="margin:.2rem 0;">
+      <summary id="guideMoreTitle" style="cursor:pointer; color:#9aa4b8; font-size:.8rem;"></summary>
+      <div id="gdScale" style="margin:.35rem 0 .4rem; font-size:.82rem; color:#ffd166;
+           background:#2b2510; border:1px solid #5a4a1e; border-radius:.5rem; padding:.45rem .7rem;"></div>
+      <div id="guideNote"></div>
+    </details>
   </details>
 
   <!-- demo hero: shows what a finished appraisal looks like (hidden once you scan) -->
   <div id="hero" style="display:none; margin:.8rem 0;">
-    <img id="heroImg" src="assets/demo.png" alt="demo"
+    <img id="heroImg" src="assets/demo.png?v20260616z" alt="demo"
          style="max-width:min(100%, 60rem); border-radius:.8rem; border:3px solid #7048e8;
                 box-shadow:0 0 .8rem rgba(112,72,232,.45), 0 .4rem 1.5rem rgba(0,0,0,.45);">
     <div class="foot" id="heroCap" style="margin-top:.3rem;"></div>
@@ -441,7 +445,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616y"></script>
+<script type="module" src="js/app.js?v20260616z"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
