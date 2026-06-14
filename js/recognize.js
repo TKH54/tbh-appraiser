@@ -207,8 +207,12 @@ function keepMainBlob(item, minFrac = 0.02) {
 
 // matcher.py _vec_from_item: tight-crop ignoring the red X, resize to 32x32,
 // return {vec:Float32(32*32*3 /255), valid:Uint8, red:Uint8}.
-function vecFromItem(item) {
-  const red = redMaskFlags(item);
+// dropRed=true (default) strips bright pure-red — the can't-equip ✕ overlay —
+// from the crop box and valid mask. dropRed=false KEEPS it, so genuinely red
+// items (Bloodstone, rubies) aren't gutted; cellVariants yields both so the
+// ensemble min covers ✕-marked items AND red items.
+function vecFromItem(item, dropRed = true) {
+  const red = dropRed ? redMaskFlags(item) : new Uint8Array(item.w * item.h);
   const { w, h, data } = item;
   let x0 = w, y0 = h, x1 = -1, y1 = -1, n = 0;
   for (let p = 0; p < w * h; p++) {
@@ -222,10 +226,29 @@ function vecFromItem(item) {
   const r = resizeArea(cell, 32, 32);
   const vec = new Float32Array(32 * 32 * 3);
   for (let i = 0; i < vec.length; i++) vec[i] = r.data[i] / 255;
-  const rred = redMaskFlags(r);
+  const rred = dropRed ? redMaskFlags(r) : new Uint8Array(32 * 32);
   const valid = new Uint8Array(32 * 32);
   for (let p = 0; p < 32 * 32; p++) valid[p] = (gray(r.data, p * 3) > 16 && !rred[p]) ? 1 : 0;
+  fillMaskHoles(valid, 32, 32);           // re-include dark INTERIOR pixels (shadows) the gray>16 cut dropped
   return { vec, valid, red: rred };
+}
+
+// Set interior holes (invalid cells not reachable from the border) to valid, so
+// dark shadows inside the sprite stop reading as background "dropout".
+function fillMaskHoles(valid, w, h) {
+  const bg = new Uint8Array(w * h);       // 1 = background reachable from edge
+  const st = [];
+  for (let x = 0; x < w; x++) { st.push(x, 0, x, h - 1); }
+  for (let y = 0; y < h; y++) { st.push(0, y, w - 1, y); }
+  while (st.length) {
+    const y = st.pop(), x = st.pop();
+    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+    const i = y * w + x;
+    if (bg[i] || valid[i]) continue;      // stop at item pixels / already seen
+    bg[i] = 1;
+    st.push(x - 1, y, x + 1, y, x, y - 1, x, y + 1);
+  }
+  for (let i = 0; i < w * h; i++) if (!valid[i] && !bg[i]) valid[i] = 1;   // enclosed hole -> fill
 }
 
 // In-game item LOCK overlays a padlock on the cell's top-right corner; it
@@ -262,6 +285,11 @@ function* cellVariants(cell) {
   const vBase = vecFromItem(base);
   yield vBase;
   yield vecFromItem(keepMainBlob(base));
+  // red-KEPT variants: rescue genuinely red items (Bloodstone, rubies) that the
+  // default ✕-stripping mangles. Ensemble min still covers ✕-marked items via
+  // the red-dropped variants above.
+  yield vecFromItem(base, false);
+  yield vecFromItem(keepMainBlob(base), false);
   // lock-tolerant variants (see blankLockCorner / maskCornerSig)
   const noLock = extractFlood(blankLockCorner(cell));
   yield vecFromItem(noLock);
