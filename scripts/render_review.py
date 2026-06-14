@@ -1,21 +1,18 @@
-"""Render a visual review montage for each promoted crowd label, so a human can
-eyeball "is this really that item?" right inside the PR.
+"""Render a visual review LINE-UP for each promoted crowd label, so a human can
+confirm by elimination: "is this really that item, and not one of the look-alikes?"
 
-Reads review_manifest.json (written by promote_labels.py: the promoted items with
-their v/m signatures + consensus counts), plus data/refs.{bin,json} and ja_names.
-For each item it renders [catalog ref | crowd label] (both mask-applied, so only
-the pixels the matcher uses are shown), annotates it, and computes a NEAREST-
-NEIGHBOUR check: which catalog item is the label actually closest to. It flags
-(⚠) anything where the nearest item isn't the promoted base, or the match is loose
-(MSE > FLAG_MSE) — those are the ones a human must look at (e.g. UI overlays like
-the can't-equip ✕, or genuine look-alike confusion).
+For each promoted item it renders, left to right:
+  [ crowd label ]  [ ★ promoted-base ref ]  [ nearest other candidates... ]
+all mask-applied (only the pixels the matcher uses) and each candidate captioned
+with its name + masked-MSE distance to the label, sorted nearest-first. The
+promoted base gets a green ★ border so you can spot it among the look-alikes.
 
-Outputs:
-  review/<base>_<grade>.png        one montage per promoted item
-  pr_body_review.md                markdown (embeds the images via raw URLs + flags)
-  GITHUB_OUTPUT has_flags=...       so the workflow can ⚠ the PR title
+It also flags (⚠) anything where the promoted base ISN'T the nearest candidate,
+or the match is loose (MSE > FLAG_MSE) — the cases a human must eyeball (UI
+overlays like the can't-equip ✕, or genuine confusion).
 
-Runnable locally too (uses a manifest you point it at, or the default path).
+Outputs: review/<base>_<grade>.png, pr_body_review.md (embeds via raw URLs),
+GITHUB_OUTPUT has_flags=...  Runnable locally: python render_review.py [manifest]
 """
 from __future__ import annotations
 
@@ -34,42 +31,36 @@ ROOT = HERE.parent
 DATA = ROOT / "data"
 REVIEW = ROOT / "review"
 MANIFEST = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "review_manifest.json"
-FLAG_MSE = 0.06        # looser than the catalog ref than this -> human should look
+FLAG_MSE = 0.06         # looser than this -> human should look
+N_CANDIDATES = 5        # nearest other items shown for elimination
 REPO = os.environ.get("GITHUB_REPOSITORY", "TKH54/tbh-appraiser")
 ASSET_BRANCH = "review-assets"
 
 
-def unpack_label(v_b64: str, m_b64: str):
-    """crowd label: v = 32x32x3 uint8, mask = 128 packed bytes -> 1024 bits."""
+def unpack_label(v_b64, m_b64):
     v = np.frombuffer(base64.b64decode(v_b64), np.uint8).reshape(32, 32, 3)
     bits = np.unpackbits(np.frombuffer(base64.b64decode(m_b64), np.uint8), bitorder="little")
     return v, bits[:1024].astype(np.uint8).reshape(32, 32)
 
 
 def load_refs():
-    """catalog refs: v = 3072 bytes, mask = 1024 DIRECT bytes (not packed)."""
     meta = json.loads((DATA / "refs.json").read_text(encoding="utf-8"))
     buf = np.frombuffer((DATA / "refs.bin").read_bytes(), np.uint8)
     stride = 4096
-    out = []
-    for i, m in enumerate(meta):
-        o = i * stride
-        out.append((m["base"], buf[o:o + 3072].reshape(32, 32, 3),
-                    buf[o + 3072:o + stride].reshape(32, 32)))
-    return out
+    return [(m["base"], buf[i * stride:i * stride + 3072].reshape(32, 32, 3),
+             buf[i * stride + 3072:i * stride + stride].reshape(32, 32))
+            for i, m in enumerate(meta)]
 
 
-def masked_mse(va, ma, vb, mb) -> float:
+def masked_mse(va, ma, vb, mb):
     keep = (ma | mb).astype(bool)
     if keep.sum() < 60:
         return 1e9
-    a = va.astype(np.float32) / 255.0
-    b = vb.astype(np.float32) / 255.0
-    d = (a - b)[keep]
+    d = (va.astype(np.float32) / 255.0 - vb.astype(np.float32) / 255.0)[keep]
     return float((d * d).sum() / (keep.sum() * 3))
 
 
-def _up(a, s=8):
+def _up(a, s):
     return np.repeat(np.repeat(a, s, 0), s, 1)
 
 
@@ -84,33 +75,63 @@ def _font(size):
         return ImageFont.load_default()
 
 
+SCALE = 7                                # 32 -> 224
+TW = 32 * SCALE                          # thumb size
+TILE_W = TW + 16                         # tile width
+CAP_H = 46                               # caption height
+
+
+def _tile(v, valid, title, sub, *, mark=False, accent=False):
+    """One labelled thumbnail (mask-applied). mark=green ★ promoted, accent=yellow."""
+    tile = Image.new("RGB", (TILE_W, TW + CAP_H), (16, 18, 24))
+    thumb = Image.fromarray(_up(_masked(v, valid), SCALE)[:, :, ::-1].astype(np.uint8))
+    x = (TILE_W - TW) // 2
+    tile.paste(thumb, (x, 4))
+    d = ImageDraw.Draw(tile)
+    border = (110, 230, 130) if mark else (240, 200, 80) if accent else None
+    if border:
+        d.rectangle([x - 1, 3, x + TW, TW + 4], outline=border, width=3)
+    d.text((6, TW + 8), title, fill=(border or (230, 233, 239)), font=_font(15))
+    if sub:
+        d.text((6, TW + 28), sub, fill=(150, 160, 180), font=_font(13))
+    return tile
+
+
 def render_one(item, refs):
     base, rarity = item["base"], item.get("rarity")
     lv, lvalid = unpack_label(item["v"], item["m"])
-    ref = next(((rv, rvalid) for b, rv, rvalid in refs if b == base), None)
-    dists = sorted((masked_mse(lv, lvalid, rv, rvalid), b) for b, rv, rvalid in refs)
-    rank = next((i + 1 for i, (_, b) in enumerate(dists) if b == base), -1)
-    mse_self = next((d for d, b in dists if b == base), 1e9)
-    nearest_base, nearest_mse = dists[0][1], dists[0][0]
+    best = {}                                            # base -> (mse, v, valid)
+    for b, rv, rvalid in refs:
+        d = masked_mse(lv, lvalid, rv, rvalid)
+        if b not in best or d < best[b][0]:
+            best[b] = (d, rv, rvalid)
+    ranked = sorted(best.items(), key=lambda kv: kv[1][0])        # nearest-first
+    rank = next((i + 1 for i, (b, _) in enumerate(ranked) if b == base), -1)
+    mse_self = best[base][0]
+    nearest_base = ranked[0][0]
     flag = (nearest_base != base) or (mse_self > FLAG_MSE)
 
-    L = _up(_masked(ref[0], ref[1])) if ref else np.full((256, 256, 3), 20, np.uint8)
-    R = _up(_masked(lv, lvalid))
-    gap = np.full((L.shape[0], 14, 3), 60, np.uint8)
-    row = np.concatenate([L, gap, R], axis=1)[:, :, ::-1]      # BGR -> RGB
-    img = Image.fromarray(row.astype(np.uint8))
+    # candidates = top-N nearest distinct items, guaranteed to include the promoted base
+    cands = ranked[:N_CANDIDATES]
+    if base not in [b for b, _ in cands]:
+        cands.append((base, best[base]))
 
-    strip = Image.new("RGB", (img.width, 70), (16, 18, 24))
-    d = ImageDraw.Draw(strip)
-    d.text((6, 4), f"{'!! ' if flag else ''}{base}  [{rarity or '-'}]",
-           fill=(255, 210, 90) if flag else (230, 233, 239), font=_font(18))
-    d.text((6, 34), f"left=catalog  right=crowd label   {item.get('n', '?')} agreed",
-           fill=(150, 160, 180), font=_font(14))
-    d.text((6, 50), f"nearest #{rank}/{len(dists)} = {nearest_base}  (MSE {mse_self:.3f})",
-           fill=(255, 140, 120) if flag else (124, 196, 124), font=_font(14))
+    tiles = [_tile(lv, lvalid, "← crowd label", f"{item.get('n','?')} agreed", accent=True)]
+    for b, (d, rv, rvalid) in cands:
+        tag = ("★ " if b == base else "") + b
+        tiles.append(_tile(rv, rvalid, tag, f"MSE {d:.3f}", mark=(b == base)))
 
-    canvas = Image.new("RGB", (img.width, img.height + 70), (16, 18, 24))
-    canvas.paste(img, (0, 0)); canvas.paste(strip, (0, img.height))
+    gap = 10
+    W = sum(t.width for t in tiles) + gap * (len(tiles) - 1)
+    H = tiles[0].height + 34
+    canvas = Image.new("RGB", (W, H), (16, 18, 24))
+    d = ImageDraw.Draw(canvas)
+    head = f"{'!! ' if flag else ''}{base} [{rarity or '-'}]  —  pick by elimination (★ = promoted)"
+    d.text((6, 8), head, fill=(255, 210, 90) if flag else (124, 196, 124), font=_font(16))
+    x = 0
+    for t in tiles:
+        canvas.paste(t, (x, 34)); x += t.width + gap
+
     safe = re.sub(r"[^A-Za-z0-9]+", "_", f"{base}_{rarity or ''}").strip("_")
     REVIEW.mkdir(exist_ok=True)
     canvas.save(REVIEW / f"{safe}.png")
@@ -132,10 +153,11 @@ def main():
     results = [render_one(it, refs) for it in items]
     any_flag = any(r["flag"] for r in results)
 
-    lines = ["## 🖼 Label review (visual)", "",
-             "左=カタログ参照 / 右=みんなのラベル（マスク適用）。**⚠ は要確認**"
-             "（別アイテムが最近傍、または一致が緩い＝UIオーバーレイや似たアイテムの疑い）。", ""]
-    for r, it in zip(results, items):
+    lines = ["## 🖼 Label review (visual, by elimination)", "",
+             "左端＝みんなのラベル。右に**最近傍の候補**を並べています（各：名前＋距離MSE、近い順）。"
+             "**★＝昇格先**。ラベルがどの候補に一番似ているかを見比べて、★で合っていれば妥当。"
+             "**⚠ は要確認**（★が最近傍でない／一致が緩い）。", ""]
+    for r in results:
         jb = ja_bases.get(r["base"], ""); jr = ja_rar.get(r["rarity"] or "", "")
         url = f"https://raw.githubusercontent.com/{REPO}/{ASSET_BRANCH}/review/{r['file']}"
         tag = "⚠ 要確認" if r["flag"] else "✅"
