@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zr";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zr";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zr";
+import { Matcher, _internal } from "./recognize.js?v20260616zs";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zs";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zs";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -317,7 +317,12 @@ async function connect() {
   setStatus(t("connect_pick"));   // shown behind the browser's picker dialog
   try {
     STREAM = await navigator.mediaDevices.getDisplayMedia({
-      video: { displaySurface: "window", frameRate: 5 }, audio: false,
+      // request the source's PHYSICAL resolution: high-DPI windows otherwise
+      // capture at the downscaled logical size (≈half the per-cell detail). The
+      // browser caps at the real surface size, so over-asking is harmless and
+      // sharpens the 32x32 cell crop where it can (better recognition input).
+      video: { displaySurface: "window", frameRate: 5,
+               width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: false,
       // privacy hardening for streamers: windows only (no full monitors),
       // never this browser tab, no surface switching mid-session
       monitorTypeSurfaces: "exclude", selfBrowserSurface: "exclude",
