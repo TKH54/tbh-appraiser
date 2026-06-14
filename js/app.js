@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zp";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zp";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zp";
+import { Matcher, _internal } from "./recognize.js?v20260616zq";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zq";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zq";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,7 +13,7 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.6.2";
 const CHANGELOG = [
   { v: "1.6.1", d: "2026/6/13",
     ja: "出品プランを追加（どれを・いくらで・いくつ出せば一番稼げるか自動提案）。記念コインをストア価格に合わせ、ドロップ率を更新。売り規制中は売買判定を保留し、再開後に自動表示。",
