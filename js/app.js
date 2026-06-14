@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zt";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zt";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zt";
+import { Matcher, _internal } from "./recognize.js?v20260616zu";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zu";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zu";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.3";
+const APP_VERSION = "1.6.4";
 const CHANGELOG = [
+  { v: "1.6.4", d: "2026/6/14",
+    ja: "未認識のアイテムが「取引不可」としてグレーで隠れてしまう不具合を修正（トーメントのソウルストーン等）。識別できない品は黄色の「?」で表示され、クリックで修正できます。",
+    en: "Fixed unidentified items being greyed out as “untradeable” and hidden (e.g. Torment soulstones). Unknown items now show a yellow “?” for review — click to fix." },
   { v: "1.6.1", d: "2026/6/13",
     ja: "出品プランを追加（どれを・いくらで・いくつ出せば一番稼げるか自動提案）。記念コインをストア価格に合わせ、ドロップ率を更新。売り規制中は売買判定を保留し、再開後に自動表示。",
     en: "Added a listing planner (what to list, at what price, and how many for the best yield). Coin prices aligned to the store with updated drop rates; the sell/keep verdict is paused during the freeze and shows automatically after reopening." },
@@ -430,7 +433,11 @@ async function runScan(img) {
   const cells = res.items.map(it => ({
     ...it,
     assigned: (it.status === "ok" && it.hash && it.dist <= autoBar(it)) ? it.hash : null,
-    ignored: it.status === "not_tradeable",
+    // Gray out only RECOGNIZED untradeable gear (base!="?"). An UNMATCHED cell
+    // auto-classed not_tradeable purely on a low-grade BORDER hue (base="?") is
+    // often a misread material (soulstones/gems read as Uncommon/Rare) — keep it
+    // as a yellow "?" review so it isn't hidden AND feeds the crowd-label loop.
+    ignored: it.status === "not_tradeable" && it.base !== "?",
     roiImg: null,
   }));
   SCAN = { roi: res.roi, imgW: res.roi.w, imgH: res.roi.h, cells, srcImg: img };
@@ -550,8 +557,9 @@ function drawOverlays() {
     } else if (!c.ignored) {
       o.innerHTML = '<span class="badge">?</span>';
     } else if (c.status === "not_tradeable" && c.base === "?") {
-      // unrecognized cell auto-classed as untradeable (e.g. a Common-border
-      // material) — show a muted ? so users know it's clickable & rescuable
+      // reached only when the USER manually ignored an unidentified cell (scan
+      // no longer auto-greys base="?" cells — see the `ignored` rule above) —
+      // show a muted ? so they know it's still clickable & rescuable
       o.innerHTML = '<span class="badge" style="background:#6e7681; box-shadow:none; animation:none;">?</span>';
     }
     o.addEventListener("click", ev => openPop(i, ev));
