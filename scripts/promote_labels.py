@@ -250,6 +250,10 @@ def main() -> None:
     if args.dry_run:
         print("(dry-run: not writing)")
         return
+    # manifest for the review-image renderer (render_review.py); not committed to the PR
+    manifest = [{**d, "v": p["v"], "m": p["m"]} for d, p in zip(details, promoted)]
+    (DATA.parent / "review_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8")
     seed.extend(promoted)
     SEED.write_text(json.dumps(seed, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {SEED} ({len(seed)} entries total, +{len(promoted)})")

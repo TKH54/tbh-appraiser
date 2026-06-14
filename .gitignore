@@ -5,3 +5,8 @@ serve.py
 trigger_prices.sh
 data/_test/
 data/_test/
+
+# crowd-label review pipeline (generated at runtime, not committed)
+review/
+review_manifest.json
+pr_body_review.md

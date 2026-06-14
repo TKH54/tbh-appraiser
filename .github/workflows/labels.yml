@@ -4,8 +4,11 @@ name: Promote crowd labels (PR only)
 # runs the anti-poisoning gates (consensus K=3 + conflict + redundancy +
 # already-seeded), and — if anything survives — opens a PULL REQUEST that adds
 # the survivors to data/learned_seed.json. It NEVER pushes to main: a human
-# reviews and merges. Trigger manually (Actions tab -> Run workflow); the weekly
-# cron is best-effort only (GitHub cron is unreliable on this repo).
+# reviews and merges. Each promoted label gets a VISUAL review montage
+# (catalog ref vs crowd label, mask-applied + nearest-neighbour check) rendered
+# to the dedicated `review-assets` branch and embedded inline in the PR; loose
+# matches / wrong-nearest get a ⚠ flag in the PR title. Trigger manually
+# (Actions tab -> Run workflow); the weekly cron is best-effort only.
 
 on:
   workflow_dispatch:
@@ -32,29 +35,60 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy
+      - run: pip install numpy pillow
       - name: Run promotion gates
         id: promote
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" | tee /tmp/promote.log
+
+      - name: Bump release so the labels reach returning visitors
+        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        run: python scripts/bump_release.py
+
+      - name: Render visual review montages
+        id: review
+        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        run: python scripts/render_review.py
+
+      - name: Publish review images to the review-assets branch
+        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" | tee /tmp/promote.log
+          test -d review || exit 0
+          tmp="$(mktemp -d)"
+          cp -r review "$tmp/review"
+          cd "$tmp"
+          git init -q -b review-assets
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add review
+          git commit -qm "label review images"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" review-assets
+
+      - name: Build PR body
+        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        run: |
           {
             echo "PR_BODY<<PREOF"
-            echo "Auto-generated from Supabase crowd labels."
-            echo "Gates passed: consensus (K), conflict, redundancy (vs bundled refs), already-seeded (vs current learned_seed)."
+            echo "Auto-generated from Supabase crowd labels (gates: consensus K / conflict / redundancy / already-seeded)."
+            echo ""
+            cat pr_body_review.md
+            echo ""
+            echo "<details><summary>gate log</summary>"
             echo ""
             echo '```'
             cat /tmp/promote.log
             echo '```'
+            echo "</details>"
             echo ""
-            echo "**Review before merging.** This only appends entries to \`data/learned_seed.json\`; the user's LOCAL labels still override on their machine. For extra safety run the pipeline regression test in the monitor repo before merging. Price-bot snapshots touch other files, so this PR won't conflict with main."
+            echo "**Review before merging.** Appends to \`data/learned_seed.json\` + bumps the version so it ships to returning visitors. The price bot's prices/history are untouched, so no conflict/revert. The user's LOCAL labels still override on their machine."
             echo "PREOF"
           } >> "$GITHUB_ENV"
-      - name: Bump release so the labels reach returning visitors (only if promoted)
-        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
-        run: python scripts/bump_release.py
+
       - name: Open PR if learned_seed.json changed
+        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -69,6 +103,6 @@ jobs:
           branch: crowd-labels/auto-promote
           delete-branch: true
           commit-message: "Promote crowd-sourced recognition labels into learned_seed.json"
-          title: "Crowd labels: promote consensus recognition fixes"
+          title: "${{ steps.review.outputs.has_flags == 'true' && '⚠ Crowd labels: review needed (consensus fixes)' || 'Crowd labels: promote consensus recognition fixes' }}"
           body: ${{ env.PR_BODY }}
           labels: crowd-labels
