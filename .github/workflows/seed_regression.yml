@@ -1,0 +1,48 @@
+name: Seed regression check
+
+# Offline check (NO game / capture / item ownership needed): re-runs recognition
+# over the stored Supabase crowd labels to see whether the current learned_seed
+# makes any label resolve to the WRONG base. Diffs against the seed set from
+# BEFORE the latest promotion (the prior commit that touched learned_seed.json),
+# so the result is independent of user growth — it isolates regressions caused by
+# the latest seed change. Read-only: never writes to the repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bar:
+        description: "confident-match distance bar"
+        default: "0.075"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # need history for the baseline
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pillow
+      - name: Get baseline learned_seed (the version before the last change to it)
+        run: |
+          # last commit that modified learned_seed.json = the latest promotion merge;
+          # its parent has the previous seed set (price-bot commits never touch it).
+          SHA=$(git log -1 --format=%H -- data/learned_seed.json)
+          if [ -n "$SHA" ] && git cat-file -e "${SHA}^:data/learned_seed.json" 2>/dev/null; then
+            git show "${SHA}^:data/learned_seed.json" > baseline_seed.json
+            echo "baseline = learned_seed.json @ ${SHA}^"
+          else
+            echo "no baseline available; running current-only"
+          fi
+      - name: Run seed regression check
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          ARGS="--bar ${{ github.event.inputs.bar || '0.075' }}"
+          [ -f baseline_seed.json ] && ARGS="$ARGS --baseline baseline_seed.json"
+          python scripts/seed_regression.py $ARGS | tee /tmp/seedreg.log

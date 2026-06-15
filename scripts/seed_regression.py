@@ -1,0 +1,169 @@
+"""Offline seed-regression check — does the current learned_seed make crowd
+labels resolve to the WRONG base?
+
+Runs entirely on the stored Supabase crowd labels (signature + the base a user
+assigned). NO game launch, NO screen capture, NO item ownership needed — items
+you don't own are covered because other players labelled them.
+
+For every collected label it re-runs nearest-ref recognition against
+(catalog refs + learned_seed) and checks whether it still resolves to the SAME
+base. With --baseline <old learned_seed.json> it diffs two seed sets so a
+regression can be attributed to the latest change (was correct/unknown before ->
+confidently WRONG now). That diff is traffic-independent: it does NOT depend on
+how many users there are, so it cleanly separates "more users => more fixes" from
+"this merge caused mis-matches => more fixes".
+
+Caveat: this is an APPROXIMATION of the live matcher (one canonical sig per label
+vs the app's extraction ensemble) — good for catching gross regressions, not a
+pixel-perfect replica.
+
+Run (needs the service_role key, same as promote_labels.py):
+  SUPABASE_SERVICE_KEY=<secret> python scripts/seed_regression.py \
+      [--baseline baseline_seed.json] [--bar 0.075]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+
+import numpy as np
+
+from promote_labels import DATA, DEFAULT_URL, fetch_rows, load_refs, unpack, unpack_sig
+
+
+def load_seed(path: Path):
+    """learned_seed.json -> [(base, (vec float32[3072], valid uint8[1024]))]."""
+    out = []
+    for e in json.loads(Path(path).read_text(encoding="utf-8")):
+        s = unpack(e["v"], e["m"])
+        if s:
+            out.append((e["base"], s))
+    return out
+
+
+def stack(refs):
+    """[(base,(vec,valid))] -> (bases, V(R,3072) float32, M(R,1024) bool)."""
+    bases = [b for b, _ in refs]
+    V = np.stack([v for _, (v, _) in refs]).astype(np.float32)
+    M = np.stack([m.astype(bool) for _, (_, m) in refs])
+    return bases, V, M
+
+
+def resolve_all(labels, bases, V, M, bar):
+    """For each label return (claimed_base, resolved_base|None, dist).
+    resolved is None when the nearest ref is farther than `bar` (= would show as
+    a '?' for review in the app, i.e. NOT a confident false positive)."""
+    R = V.shape[0]
+    Vr = V.reshape(R, 1024, 3)
+    res = []
+    for claimed, (va, ma) in labels:
+        keep = M | ma                       # (R,1024)
+        cnt = keep.sum(1)                    # (R,)
+        diff = Vr - va.reshape(1024, 3)      # (R,1024,3)
+        per = np.einsum("ijk,ijk->ij", diff, diff)  # (R,1024) sum over 3 channels
+        s = (per * keep).sum(1)              # (R,)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mse = s / (cnt * 3)
+        mse[cnt < 60] = 1e9                  # too little overlap -> unusable
+        j = int(np.argmin(mse))
+        d = float(mse[j])
+        res.append((claimed, bases[j] if d <= bar else None, d))
+    return res
+
+
+def classify(claimed, resolved):
+    if resolved is None:
+        return "unresolved"          # would show as '?' (safe — not a false positive)
+    return "correct" if resolved == claimed else "mis"   # mis = confident WRONG id
+
+
+def summarize(res):
+    c = Counter(classify(cl, rb) for cl, rb, _ in res)
+    return c["correct"], c["mis"], c["unresolved"]
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--baseline", help="prior learned_seed.json to diff against")
+    ap.add_argument("--bar", type=float, default=0.075,
+                    help="confident-match distance (app learned-ref auto bar = 0.075)")
+    args = ap.parse_args()
+
+    url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if not key:
+        sys.exit("set SUPABASE_SERVICE_KEY (service_role secret)")
+
+    items = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
+    bases_set = {v["base"] for v in items.values()}
+    try:
+        ja = json.loads((DATA / "ja_names.json").read_text(encoding="utf-8")).get("bases", {})
+    except Exception:
+        ja = {}
+
+    rows = fetch_rows(url, key)
+    labels = []
+    for r in rows:
+        if r.get("base") not in bases_set:
+            continue
+        sig = unpack_sig(r.get("sig", ""))
+        if sig is None or int(sig[1].sum()) < 60:
+            continue
+        labels.append((r["base"], sig))
+    print(f"fetched {len(rows)} rows -> {len(labels)} valid catalog labels")
+
+    catalog = load_refs()
+    cur_seed = load_seed(DATA / "learned_seed.json")
+    cb, cV, cM = stack(catalog + cur_seed)
+    cur = resolve_all(labels, cb, cV, cM, args.bar)
+    cc, cm, cu = summarize(cur)
+    print(f"\nCURRENT learned_seed ({len(cur_seed)} entries) @ bar {args.bar}:")
+    print(f"  correct {cc} | MIS(confident wrong) {cm} | unresolved/'?' {cu}  "
+          f"(of {len(labels)})")
+
+    lines = []
+    if args.baseline:
+        base_seed = load_seed(Path(args.baseline))
+        bb, bV, bM = stack(catalog + base_seed)
+        base = resolve_all(labels, bb, bV, bM, args.bar)
+        regressions, improvements = [], 0
+        for (cl, rb_cur, _), (_, rb_base, _) in zip(cur, base):
+            cur_cls = classify(cl, rb_cur)
+            base_cls = classify(cl, rb_base)
+            if base_cls != "mis" and cur_cls == "mis":
+                regressions.append((cl, rb_cur))      # got broken by the new seeds
+            elif base_cls != "correct" and cur_cls == "correct":
+                improvements += 1
+        print(f"\nDIFF vs baseline ({len(base_seed)} entries) — attributable to the "
+              f"{len(cur_seed) - len(base_seed)}-entry change:")
+        print(f"  *** REGRESSIONS (now confidently WRONG): {len(regressions)} ***")
+        print(f"      improvements (now correct): {improvements}")
+        pairs = Counter((a, b) for a, b in regressions)
+        for (a, b), n in pairs.most_common(25):
+            an = f"{a}（{ja.get(a)}）" if ja.get(a) else a
+            bn = f"{b}（{ja.get(b)}）" if ja.get(b) else b
+            lines.append(f"- {an}  ->誤→  {bn}   ({n})")
+            print("   " + lines[-1])
+        verdict = ("CLEAN — no new mis-matches" if not regressions
+                   else f"{len(regressions)} label(s) regressed — inspect above")
+        print(f"\nVERDICT: {verdict}")
+
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a", encoding="utf-8") as f:
+            f.write("### seed regression check\n")
+            f.write(f"- labels tested: **{len(labels)}** (bar {args.bar})\n")
+            f.write(f"- current: correct {cc} / **MIS {cm}** / unresolved {cu}\n")
+            if args.baseline:
+                f.write(f"- **regressions from this change: {len(regressions)}** "
+                        f"(improvements {improvements})\n")
+                f.write("".join("  " + ln + "\n" for ln in lines)
+                        or ("  (none)\n" if not lines else ""))
+
+
+if __name__ == "__main__":
+    main()
