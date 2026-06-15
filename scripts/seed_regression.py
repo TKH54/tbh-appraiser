@@ -73,6 +73,39 @@ def rate_report(rows, seeded_bases, hours):
         print(f"  {b:2d}-{b+1:2d}h ago: {n:4d}  (seeded {seeded.get(b, 0)})")
 
 
+def render_base(rows, base, n, out_path):
+    """Render up to n crowd-label sigs (post-extraction 32x32) for one base, next
+    to the clean catalog ref, so we can SEE where decorations land vs the base."""
+    from PIL import Image, ImageDraw
+    vecs = []
+    for r in rows:
+        if r.get("base") != base:
+            continue
+        s = unpack_sig(r.get("sig", ""))
+        if s is not None:
+            vecs.append(s[0])
+        if len(vecs) >= n:
+            break
+    ref_vec = next((v for b, (v, _) in load_refs() if b == base), None)
+
+    def to_img(vec):
+        a = (np.clip(vec, 0, 1) * 255).astype(np.uint8).reshape(32, 32, 3)[:, :, ::-1]  # BGR->RGB
+        return Image.fromarray(a, "RGB").resize((96, 96), Image.NEAREST)
+
+    cells = ([("REF", to_img(ref_vec))] if ref_vec is not None else []) + \
+            [(f"L{i}", to_img(v)) for i, v in enumerate(vecs)]
+    cols = 8
+    rowsn = (len(cells) + cols - 1) // cols
+    canvas = Image.new("RGB", (96 * cols, 112 * rowsn), (18, 18, 26))
+    d = ImageDraw.Draw(canvas)
+    for i, (lab, img) in enumerate(cells):
+        x, y = (i % cols) * 96, (i // cols) * 112
+        canvas.paste(img, (x, y))
+        d.text((x + 2, y + 98), lab, fill=(210, 210, 210))
+    canvas.save(out_path)
+    print(f"rendered ref + {len(vecs)} '{base}' label sigs -> {out_path}")
+
+
 def diag_report(rows, seed_clusters, hours):
     """Which ALREADY-SEEDED items dominate recent re-fixes, and how many seed
     clusters each already has. Concentrated on a few items -> just promote their
@@ -198,6 +231,9 @@ def main() -> None:
                     help="hours: report fixes(labels)/hour over the last N hours")
     ap.add_argument("--diag", type=int, default=0,
                     help="hours: which already-seeded items dominate recent re-fixes")
+    ap.add_argument("--render", help="base name: render its label sigs + ref to a PNG")
+    ap.add_argument("--render-n", type=int, default=23)
+    ap.add_argument("--render-out", default="probe.png")
     args = ap.parse_args()
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
@@ -223,6 +259,9 @@ def main() -> None:
         labels.append((r["base"], sig))
     print(f"fetched {len(rows)} rows -> {len(labels)} valid catalog labels")
 
+    if args.render:
+        render_base(rows, args.render, args.render_n, args.render_out)
+        return
     if args.rate or args.diag:
         from collections import Counter
         seed_clusters = Counter(e["base"] for e in

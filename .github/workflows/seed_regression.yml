@@ -22,6 +22,9 @@ on:
       diag:
         description: "hours: which already-seeded items dominate recent re-fixes (instead of the diff)"
         default: ""
+      render:
+        description: "base name: render its label sigs + ref to a PNG artifact (decoration probe)"
+        default: ""
 
 permissions:
   contents: read
@@ -52,7 +55,9 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          if [ -n "${{ github.event.inputs.diag }}" ]; then
+          if [ -n "${{ github.event.inputs.render }}" ]; then
+            python scripts/seed_regression.py --render "${{ github.event.inputs.render }}" --render-out probe.png
+          elif [ -n "${{ github.event.inputs.diag }}" ]; then
             python scripts/seed_regression.py --diag "${{ github.event.inputs.diag }}"
           elif [ -n "${{ github.event.inputs.rate }}" ]; then
             python scripts/seed_regression.py --rate "${{ github.event.inputs.rate }}"
@@ -63,3 +68,9 @@ jobs:
             [ -f baseline_seed.json ] && ARGS="$ARGS --baseline baseline_seed.json"
             python scripts/seed_regression.py $ARGS
           fi
+      - name: Upload render probe
+        if: ${{ github.event.inputs.render != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoration-probe
+          path: probe.png
