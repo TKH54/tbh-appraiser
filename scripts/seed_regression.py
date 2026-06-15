@@ -45,6 +45,34 @@ def load_seed(path: Path):
     return out
 
 
+def rate_report(rows, seeded_bases, hours):
+    """Fixes (labels) per hour over the last `hours`, to see if fixing is rising or
+    falling. 'seeded' = fix on an item we ALREADY recognise (should shrink if the
+    recognition work is sticking; the long tail of NOT-yet-seeded items is healthy)."""
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    per, seeded = {}, {}
+    for r in rows:
+        ts = r.get("created_at")
+        if not ts:
+            continue
+        try:
+            t = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        b = int((now - t).total_seconds() // 3600)
+        if b < 0 or b >= hours:
+            continue
+        per[b] = per.get(b, 0) + 1
+        if r.get("base") in seeded_bases:
+            seeded[b] = seeded.get(b, 0) + 1
+    print(f"\nFIX RATE — labels/hour over the last {hours}h (newest first; "
+          f"'seeded' = fix on an already-recognised item):")
+    for b in range(hours):
+        n = per.get(b, 0)
+        print(f"  {b:2d}-{b+1:2d}h ago: {n:4d}  (seeded {seeded.get(b, 0)})")
+
+
 def edge_map(vec):
     """Luminance gradient-magnitude (matches recognize.js edgeMap). vec: (3072,) -> (1024,)."""
     lum = (0.114 * vec[0::3] + 0.587 * vec[1::3] + 0.299 * vec[2::3]).reshape(32, 32)
@@ -132,6 +160,8 @@ def main() -> None:
                     help="confident-match distance (app learned-ref auto bar = 0.075)")
     ap.add_argument("--edge-sweep",
                     help="comma weights (e.g. 0,0.1,0.3,0.5,1.0) -> threshold-free top1 per W")
+    ap.add_argument("--rate", type=int, default=0,
+                    help="hours: report fixes(labels)/hour over the last N hours")
     args = ap.parse_args()
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
@@ -156,6 +186,12 @@ def main() -> None:
             continue
         labels.append((r["base"], sig))
     print(f"fetched {len(rows)} rows -> {len(labels)} valid catalog labels")
+
+    if args.rate:
+        seeded_bases = {e["base"] for e in
+                        json.loads((DATA / "learned_seed.json").read_text(encoding="utf-8"))}
+        rate_report(rows, seeded_bases, args.rate)
+        return
 
     catalog = load_refs()
     cur_seed = load_seed(DATA / "learned_seed.json")

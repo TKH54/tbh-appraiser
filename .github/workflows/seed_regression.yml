@@ -16,6 +16,9 @@ on:
       edge_sweep:
         description: "edge-weight sweep, e.g. 0,0.1,0.3,0.5,1.0 (runs top1 sweep instead of the diff)"
         default: ""
+      rate:
+        description: "hours: report fixes(labels)/hour over the last N hours (instead of the diff)"
+        default: ""
 
 permissions:
   contents: read
@@ -46,7 +49,9 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          if [ -n "${{ github.event.inputs.edge_sweep }}" ]; then
+          if [ -n "${{ github.event.inputs.rate }}" ]; then
+            python scripts/seed_regression.py --rate "${{ github.event.inputs.rate }}"
+          elif [ -n "${{ github.event.inputs.edge_sweep }}" ]; then
             python scripts/seed_regression.py --edge-sweep "${{ github.event.inputs.edge_sweep }}"
           else
             ARGS="--bar ${{ github.event.inputs.bar || '0.075' }}"
