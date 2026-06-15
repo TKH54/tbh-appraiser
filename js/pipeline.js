@@ -1,8 +1,8 @@
 // Full scan pipeline: screenshot -> warehouse cells -> identified items.
 // Ports matcher.py identify() on top of detect.js + recognize.js.
 
-import { readWarehouse } from "./detect.js?v20260616zac";
-import { Matcher, _internal } from "./recognize.js?v20260616zac";
+import { readWarehouse } from "./detect.js?v20260616zad";
+import { Matcher, _internal } from "./recognize.js?v20260616zad";
 const { crop, borderRarity, vecFromItem, extractFlood, bgr2hsv } = _internal;
 
 // The red "can't equip" X (lower-right) appears ONLY on equipment — materials
