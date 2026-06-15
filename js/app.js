@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zy";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zy";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zy";
+import { Matcher, _internal } from "./recognize.js?v20260616zz";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zz";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zz";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.8";
+const APP_VERSION = "1.6.9";
 const CHANGELOG = [
+  { v: "1.6.9", d: "2026/6/15",
+    ja: "みんなの修正データの反映で、約30種類のアイテムを新たに自動認識できるようになりました（認識精度アップ）。",
+    en: "~30 more item types are now auto-recognized as everyone’s fixes get folded in — better recognition accuracy." },
   { v: "1.6.4", d: "2026/6/14",
     ja: "未認識のアイテムが「取引不可」としてグレーで隠れてしまう不具合を修正（トーメントのソウルストーン等）。識別できない品は黄色の「?」で表示され、クリックで修正できます。",
     en: "Fixed unidentified items being greyed out as “untradeable” and hidden (e.g. Torment soulstones). Unknown items now show a yellow “?” for review — click to fix." },
