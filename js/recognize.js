@@ -279,6 +279,56 @@ function maskCornerSig(sig) {
   return { vec: sig.vec, valid, red };
 }
 
+// Geometry-aware background removal: icons are centred, so the corners are
+// background and the centre is the item. extractFlood seeds from the WHOLE
+// border (every `step` px on all 4 edges) -> a wide item touching an edge gets a
+// flood seed ON it and erodes; and dark item regions adjacent to the dark bg get
+// flooded away (the "dropout" seen in captures). Here we seed ONLY from the 4
+// corner patches AND never flood a protected central disk, so the centred item
+// (incl. its dark parts) survives. Added as an EXTRA ensemble variant (the
+// matcher takes the min over variants, so this can only help, not hurt).
+function extractCorner(cell, lo = 60) {
+  const { w, h } = cell;
+  const m = Math.floor(0.10 * Math.min(h, w));
+  const iw = w - 2 * m, ih = h - 2 * m;
+  if (iw <= 2 || ih <= 2) return crop(cell, 0, 0, w, h);
+  const inner = crop(cell, m, m, iw, ih);
+  const d = inner.data;
+  const filled = new Uint8Array(iw * ih);
+  const stack = [];
+  const cx = (iw - 1) / 2, cy = (ih - 1) / 2;
+  const pr2 = (0.34 * Math.min(iw, ih)) ** 2;       // protected central disk
+  const cn = Math.max(2, Math.floor(iw * 0.18));    // corner seed patch size
+  const pushSeed = (x, y) => {
+    if (x < 0 || y < 0 || x >= iw || y >= ih) return;
+    if (!filled[y * iw + x]) { filled[y * iw + x] = 1; stack.push(x, y); }
+  };
+  for (let y = 0; y < cn; y++) for (let x = 0; x < cn; x++) {
+    pushSeed(x, y); pushSeed(iw - 1 - x, y);
+    pushSeed(x, ih - 1 - y); pushSeed(iw - 1 - x, ih - 1 - y);
+  }
+  const within = (a, b) => Math.abs(a - b) <= lo;
+  while (stack.length) {
+    const y = stack.pop(), x = stack.pop();
+    const i = (y * iw + x) * 3;
+    const nb = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+    for (const [nx, ny] of nb) {
+      if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) continue;
+      if ((nx - cx) ** 2 + (ny - cy) ** 2 < pr2) continue;   // never flood the centre
+      const p = ny * iw + nx;
+      if (filled[p]) continue;
+      const j = p * 3;
+      if (within(d[j], d[i]) && within(d[j + 1], d[i + 1]) && within(d[j + 2], d[i + 2])) {
+        filled[p] = 1; stack.push(nx, ny);
+      }
+    }
+  }
+  const out = new Uint8Array(iw * ih * 3);
+  out.set(d);
+  for (let p = 0; p < iw * ih; p++) if (filled[p]) { out[p * 3] = out[p * 3 + 1] = out[p * 3 + 2] = 0; }
+  return { w: iw, h: ih, data: out };
+}
+
 // matcher.py cell_variants: extraction ENSEMBLE (cheap-first generator).
 function* cellVariants(cell) {
   const base = extractFlood(cell);
@@ -296,6 +346,10 @@ function* cellVariants(cell) {
   yield vecFromItem(keepMainBlob(noLock));
   yield maskCornerSig(vBase);
   yield maskCornerSig(vecFromItem(noLock));
+  // geometry-aware: corner-seeded flood + protected centre (reduces dark-region dropout)
+  const geom = extractCorner(cell);
+  yield vecFromItem(geom);
+  yield vecFromItem(keepMainBlob(geom));
   const more = [extractFlood(cell, 0.10, 35),
                extractTwotone(cell, 40), extractTwotone(cell, 60), extractTwotone(cell, 85),
                extractTwotone(blankLockCorner(cell), 60)];
