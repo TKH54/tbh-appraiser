@@ -45,6 +45,45 @@ def load_seed(path: Path):
     return out
 
 
+def edge_map(vec):
+    """Luminance gradient-magnitude (matches recognize.js edgeMap). vec: (3072,) -> (1024,)."""
+    lum = (0.114 * vec[0::3] + 0.587 * vec[1::3] + 0.299 * vec[2::3]).reshape(32, 32)
+    gx = np.zeros((32, 32), np.float32); gy = np.zeros((32, 32), np.float32)
+    gx[:, 1:-1] = lum[:, 2:] - lum[:, :-2]; gx[:, 0] = lum[:, 1] - lum[:, 0]; gx[:, -1] = lum[:, -1] - lum[:, -2]
+    gy[1:-1, :] = lum[2:, :] - lum[:-2, :]; gy[0, :] = lum[1, :] - lum[0, :]; gy[-1, :] = lum[-1, :] - lum[-2, :]
+    return np.sqrt(gx * gx + gy * gy).reshape(1024)
+
+
+def edge_sweep(labels, bases, V, M, weights):
+    """Threshold-free top1 over the big label set for each edge weight W:
+    distance = colourMSE + W * edgeMSE (single-sig, the seed_regression approximation).
+    Reports how full-edge changes RANKING accuracy at statistical scale."""
+    R = V.shape[0]
+    Vr = V.reshape(R, 1024, 3)
+    REDGE = np.stack([edge_map(V[i]) for i in range(R)])          # (R,1024)
+    correct = {w: 0 for w in weights}
+    used = 0
+    for base_L, (va, ma) in labels:
+        keep = (M | ma)
+        cnt = keep.sum(1)
+        ok = cnt >= 60
+        if not ok.any():
+            continue
+        used += 1
+        cdiff = Vr - va.reshape(1024, 3)
+        cmse = np.einsum("ijk,ijk->ij", cdiff, cdiff)
+        cmse = (cmse * keep).sum(1) / np.maximum(cnt * 3, 1)
+        qe = edge_map(va)
+        ediff = REDGE - qe
+        emse = (ediff * ediff * keep).sum(1) / np.maximum(cnt, 1)
+        for w in weights:
+            d = cmse + w * emse
+            d[~ok] = 1e9
+            if bases[int(np.argmin(d))] == base_L:
+                correct[w] += 1
+    return correct, used
+
+
 def stack(refs):
     """[(base,(vec,valid))] -> (bases, V(R,3072) float32, M(R,1024) bool)."""
     bases = [b for b, _ in refs]
@@ -91,6 +130,8 @@ def main() -> None:
     ap.add_argument("--baseline", help="prior learned_seed.json to diff against")
     ap.add_argument("--bar", type=float, default=0.075,
                     help="confident-match distance (app learned-ref auto bar = 0.075)")
+    ap.add_argument("--edge-sweep",
+                    help="comma weights (e.g. 0,0.1,0.3,0.5,1.0) -> threshold-free top1 per W")
     args = ap.parse_args()
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
@@ -119,6 +160,16 @@ def main() -> None:
     catalog = load_refs()
     cur_seed = load_seed(DATA / "learned_seed.json")
     cb, cV, cM = stack(catalog + cur_seed)
+    if args.edge_sweep:
+        weights = [float(x) for x in args.edge_sweep.split(",")]
+        correct, used = edge_sweep(labels, cb, cV, cM, weights)
+        b0 = correct[weights[0]]
+        print(f"\nEDGE SWEEP (single-sig top1 over {used} labels, threshold-free; "
+              f"distance = colourMSE + W*edgeMSE):")
+        for w in weights:
+            tag = "(baseline)" if w == weights[0] else f"{correct[w]-b0:+d} cells vs W={weights[0]}"
+            print(f"  W={w:<5} top1={100*correct[w]/used:5.2f}%  ({correct[w]})  {tag}")
+        return
     cur = resolve_all(labels, cb, cV, cM, args.bar)
     cc, cm, cu = summarize(cur)
     print(f"\nCURRENT learned_seed ({len(cur_seed)} entries) @ bar {args.bar}:")

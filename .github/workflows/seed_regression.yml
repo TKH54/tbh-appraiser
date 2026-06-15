@@ -13,6 +13,9 @@ on:
       bar:
         description: "confident-match distance bar"
         default: "0.075"
+      edge_sweep:
+        description: "edge-weight sweep, e.g. 0,0.1,0.3,0.5,1.0 (runs top1 sweep instead of the diff)"
+        default: ""
 
 permissions:
   contents: read
@@ -43,6 +46,10 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          ARGS="--bar ${{ github.event.inputs.bar || '0.075' }}"
-          [ -f baseline_seed.json ] && ARGS="$ARGS --baseline baseline_seed.json"
-          python scripts/seed_regression.py $ARGS | tee /tmp/seedreg.log
+          if [ -n "${{ github.event.inputs.edge_sweep }}" ]; then
+            python scripts/seed_regression.py --edge-sweep "${{ github.event.inputs.edge_sweep }}"
+          else
+            ARGS="--bar ${{ github.event.inputs.bar || '0.075' }}"
+            [ -f baseline_seed.json ] && ARGS="$ARGS --baseline baseline_seed.json"
+            python scripts/seed_regression.py $ARGS
+          fi
