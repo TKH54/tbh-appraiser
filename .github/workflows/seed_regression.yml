@@ -19,6 +19,9 @@ on:
       rate:
         description: "hours: report fixes(labels)/hour over the last N hours (instead of the diff)"
         default: ""
+      diag:
+        description: "hours: which already-seeded items dominate recent re-fixes (instead of the diff)"
+        default: ""
 
 permissions:
   contents: read
@@ -49,7 +52,9 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          if [ -n "${{ github.event.inputs.rate }}" ]; then
+          if [ -n "${{ github.event.inputs.diag }}" ]; then
+            python scripts/seed_regression.py --diag "${{ github.event.inputs.diag }}"
+          elif [ -n "${{ github.event.inputs.rate }}" ]; then
             python scripts/seed_regression.py --rate "${{ github.event.inputs.rate }}"
           elif [ -n "${{ github.event.inputs.edge_sweep }}" ]; then
             python scripts/seed_regression.py --edge-sweep "${{ github.event.inputs.edge_sweep }}"

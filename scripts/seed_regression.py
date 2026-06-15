@@ -73,6 +73,40 @@ def rate_report(rows, seeded_bases, hours):
         print(f"  {b:2d}-{b+1:2d}h ago: {n:4d}  (seeded {seeded.get(b, 0)})")
 
 
+def diag_report(rows, seed_clusters, hours):
+    """Which ALREADY-SEEDED items dominate recent re-fixes, and how many seed
+    clusters each already has. Concentrated on a few items -> just promote their
+    extra clusters; spread out / items with many clusters still re-fixed -> the
+    appearance space (decorations/scale/light) isn't saturated -> needs better
+    generalisation, not just more seeds."""
+    import datetime as dt
+    from collections import Counter
+    now = dt.datetime.now(dt.timezone.utc)
+    seeded = set(seed_clusters)
+    on_seeded, total = Counter(), 0
+    for r in rows:
+        ts, b = r.get("created_at"), r.get("base")
+        if not ts or not b:
+            continue
+        try:
+            t = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if (now - t).total_seconds() > hours * 3600:
+            continue
+        total += 1
+        if b in seeded:
+            on_seeded[b] += 1
+    tot_s = sum(on_seeded.values())
+    print(f"\nSEEDED-ITEM RE-FIX DIAG (last {hours}h): {total} fixes, "
+          f"{tot_s} on already-seeded items ({100*tot_s/max(total,1):.0f}%)")
+    top = on_seeded.most_common(20)
+    print(f"  top {len(top)} = {100*sum(n for _,n in top)/max(tot_s,1):.0f}% of seeded re-fixes")
+    print(f"  {'base':34s} re-fixes  seed-clusters")
+    for b, n in top:
+        print(f"  {b:34s} {n:5d}      {seed_clusters.get(b, 0)}")
+
+
 def edge_map(vec):
     """Luminance gradient-magnitude (matches recognize.js edgeMap). vec: (3072,) -> (1024,)."""
     lum = (0.114 * vec[0::3] + 0.587 * vec[1::3] + 0.299 * vec[2::3]).reshape(32, 32)
@@ -162,6 +196,8 @@ def main() -> None:
                     help="comma weights (e.g. 0,0.1,0.3,0.5,1.0) -> threshold-free top1 per W")
     ap.add_argument("--rate", type=int, default=0,
                     help="hours: report fixes(labels)/hour over the last N hours")
+    ap.add_argument("--diag", type=int, default=0,
+                    help="hours: which already-seeded items dominate recent re-fixes")
     args = ap.parse_args()
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
@@ -187,10 +223,14 @@ def main() -> None:
         labels.append((r["base"], sig))
     print(f"fetched {len(rows)} rows -> {len(labels)} valid catalog labels")
 
-    if args.rate:
-        seeded_bases = {e["base"] for e in
-                        json.loads((DATA / "learned_seed.json").read_text(encoding="utf-8"))}
-        rate_report(rows, seeded_bases, args.rate)
+    if args.rate or args.diag:
+        from collections import Counter
+        seed_clusters = Counter(e["base"] for e in
+                                json.loads((DATA / "learned_seed.json").read_text(encoding="utf-8")))
+        if args.rate:
+            rate_report(rows, set(seed_clusters), args.rate)
+        if args.diag:
+            diag_report(rows, seed_clusters, args.diag)
         return
 
     catalog = load_refs()
