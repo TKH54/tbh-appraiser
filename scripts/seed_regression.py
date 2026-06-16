@@ -263,7 +263,6 @@ def main() -> None:
         render_base(rows, args.render, args.render_n, args.render_out)
         return
     if args.rate or args.diag:
-        from collections import Counter
         seed_clusters = Counter(e["base"] for e in
                                 json.loads((DATA / "learned_seed.json").read_text(encoding="utf-8")))
         if args.rate:
