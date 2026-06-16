@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zah";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zah";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zah";
+import { Matcher, _internal } from "./recognize.js?v20260616zai";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zai";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zai";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,7 +13,7 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.17";
+const APP_VERSION = "1.6.18";
 const CHANGELOG = [
   { v: "1.6.16", d: "2026/6/16",
     ja: "みんなの修正データを反映し、約37種類のアイテムの自動認識を追加・改善しました（認識精度アップ）。",
