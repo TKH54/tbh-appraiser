@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.26";
+const APP_VERSION = "1.6.27";
 const CHANGELOG = [
+  { v: "1.6.27", d: "2026/6/26",
+    ja: "価格表示の不具合を修正：再開後に暴落した銘柄（オパール等）で、まだ更新されていない古い中央値がそのまま高値で表示され続ける問題を解消しました。深い板の現在最安値が中央値より大幅に下なら実勢を反映します。",
+    en: "Fixed a price-display bug: items that crashed after reopening (e.g. Opal) could keep showing a stale, not-yet-updated high median. When a deep live market sits far below that median, the tool now reflects the live price." },
   { v: "1.6.26", d: "2026/6/25",
     ja: "価格精度を改善：中央値の取得が遅れている銘柄で、古い中央値ではなく毎回更新される実勢（深い板の最安値）を使うようにしました。過大・過小どちらのズレも縮みます。",
     en: "Better price accuracy: for items whose median is lagging, the tool now uses the always-fresh live market (deep-market lowest ask) instead of a stale last-median — cutting both over- and under-valuation." },
@@ -205,6 +208,13 @@ const STALE_FACTOR = 0.5;   // ask below this fraction of the median ref = crash
 const STALE_Q = 10;         // ...this many listings deep = real undercutting, not a lone lowball
 function realUnit(p) {
   if (!p) return null;
+  // reopen-CRASH override (must run even when a fresh median EXISTS): the per-item
+  // median (p.m) is slow/flaky, so right after a crash it can stay STALE-HIGH while a
+  // DEEP ask market (q>=STALE_Q) already sits far below it (ask < ref*STALE_FACTOR).
+  // That gap = the market moved DOWN; the median just hasn't reprinted -> use the live ask.
+  // (Restores v1.6.22; the v1.6.26 rewrite dropped this by returning p.m unconditionally.)
+  const ref = p.m ?? p.lm;
+  if (ref != null && p.p != null && (p.q || 0) >= STALE_Q && p.p < ref * STALE_FACTOR) return p.p;
   if (p.m != null) return p.m;                          // a fresh real-sale median = the best value
   // no fresh median -> lm is the LAST median, which the slow/flaky per-item fetch leaves
   // stale in EITHER direction (crashed OR recovered). The ask + listings refresh every run
