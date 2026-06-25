@@ -125,12 +125,15 @@ def enrich_volumes(items: dict[str, dict], prev_doc: dict) -> int:
     n = len(keys)
     if not n:
         return 0
-    shard = int(os.environ.get("PRICES_SHARD", "200"))
+    # env vars may arrive as "" from workflow_dispatch inputs on non-dispatch
+    # events, so coalesce empties to the defaults before parsing.
+    shard = int(os.environ.get("PRICES_SHARD") or 200)
+    delay = float(os.environ.get("PRICES_DELAY") or 4.5)   # per-item pacing (s)
     # wall-clock backstop so a throttled Steam (long 429 backoffs) can't push the
     # run past the job timeout — a timed-out job is killed before its push step and
     # breaks the self-chaining loop. The offset only advances by what we actually
     # processed, so a short run just resumes the rotation next time.
-    deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC", "1500"))
+    deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC") or 1500)
     off = int(prev_doc.get("_eoff", 0) or 0) % n
     done = 0
     while done < shard and done < n and time.time() < deadline:
@@ -138,7 +141,7 @@ def enrich_volumes(items: dict[str, dict], prev_doc: dict) -> int:
         v = items[hn]
         d = get("https://steamcommunity.com/market/priceoverview/",
                 appid=APPID, currency=8, market_hash_name=hn)
-        time.sleep(4.5)
+        time.sleep(delay)
         done += 1
         if not d or not d.get("success"):
             continue                            # transient -> keep carried baseline
