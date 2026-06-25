@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zap";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zap";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zap";
+import { Matcher, _internal } from "./recognize.js?v20260616zaq";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zaq";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zaq";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.25";
+const APP_VERSION = "1.6.26";
 const CHANGELOG = [
+  { v: "1.6.26", d: "2026/6/25",
+    ja: "価格精度を改善：中央値の取得が遅れている銘柄で、古い中央値ではなく毎回更新される実勢（深い板の最安値）を使うようにしました。過大・過小どちらのズレも縮みます。",
+    en: "Better price accuracy: for items whose median is lagging, the tool now uses the always-fresh live market (deep-market lowest ask) instead of a stale last-median — cutting both over- and under-valuation." },
   { v: "1.6.25", d: "2026/6/25",
     ja: "出品プランを修正：再開直後は在庫の山積みで回転率が当てにならず全部「売れにくい」になるため、手取りの高い順に並べるようにしました（安い量産品より高額品を優先）。",
     en: "Fixed the listing plan: right after reopening, huge backlogs make turnover unreliable (everything reads 'slow'), so items are now ranked by net take-home — high-value first, not cheap commodities." },
@@ -202,9 +205,13 @@ const STALE_FACTOR = 0.5;   // ask below this fraction of the median ref = crash
 const STALE_Q = 10;         // ...this many listings deep = real undercutting, not a lone lowball
 function realUnit(p) {
   if (!p) return null;
-  const ref = p.m ?? p.lm;
-  if (ref != null && p.p != null && p.p < ref * STALE_FACTOR && (p.q || 0) >= STALE_Q) return p.p;
-  return ref ?? p.p ?? null;
+  if (p.m != null) return p.m;                          // a fresh real-sale median = the best value
+  // no fresh median -> lm is the LAST median, which the slow/flaky per-item fetch leaves
+  // stale in EITHER direction (crashed OR recovered). The ask + listings refresh every run
+  // (cheap sweep), so a DEEP ask market (q>=STALE_Q) is the always-fresh live floor -> trust
+  // it over the stale lm. (Thin market: keep lm; a lone ask is unreliable.)
+  if (p.p != null && (p.q || 0) >= STALE_Q) return p.p;
+  return p.lm ?? p.p ?? null;
 }
 function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
   if (mode === "base") {
