@@ -249,22 +249,32 @@ def margin_sweep(labels, bases, V, M, bar, eps_list):
         mse2 = mse.copy()
         mse2[bid == bid[j]] = 1e9          # exclude all refs of the winner's base
         d2 = float(mse2.min())
-        recs.append((bases[j] == claimed, d2 - d1))
+        recs.append((bases[j] == claimed, d2 - d1, claimed, bases[j]))
     total = len(labels)
-    base_correct = sum(1 for ok, _ in recs if ok)
-    base_mis = sum(1 for ok, _ in recs if not ok)
+    base_correct = sum(1 for ok, *_ in recs if ok)
+    base_mis = sum(1 for ok, *_ in recs if not ok)
     print(f"\nAMBIGUITY-GUARD SWEEP (single-sig, {total} labels, bar {bar}):")
     print(f"  NO GUARD:  correct {base_correct} | MIS {base_mis} | '?' {n_unres0}"
           f"  ('?' = {100*n_unres0/total:.1f}%)")
     print(f"  {'eps':>6}  {'MIS_killed':>10}  {'correct_lost':>12}  {'MIS_left':>8}"
           f"  {'?_rate':>7}  {'?_Δpp':>6}  {'kill:lose':>9}")
     for eps in eps_list:
-        mis_killed = sum(1 for ok, mg in recs if (not ok) and mg < eps)
-        correct_lost = sum(1 for ok, mg in recs if ok and mg < eps)
+        mis_killed = sum(1 for ok, mg, *_ in recs if (not ok) and mg < eps)
+        correct_lost = sum(1 for ok, mg, *_ in recs if ok and mg < eps)
         q_total = n_unres0 + mis_killed + correct_lost
         ratio = f"{mis_killed/max(correct_lost,1):.2f}:1"
         print(f"  {eps:>6}  {mis_killed:>10}  {correct_lost:>12}  {base_mis-mis_killed:>8}"
               f"  {100*q_total/total:>6.1f}%  {100*(mis_killed+correct_lost)/total:>+5.1f}  {ratio:>9}")
+    eps0 = eps_list[0]
+    lost = Counter(cb for ok, mg, cb, wb in recs if ok and mg < eps0)
+    killed = Counter((cb, wb) for ok, mg, cb, wb in recs if (not ok) and mg < eps0)
+    print('')
+    print(f"  AT eps={eps0} -- TOP correct->'?' (confident-correct now needs review = the COST):")
+    for b, n in lost.most_common(18):
+        print(f"    {n:4d}  {b}")
+    print(f"  AT eps={eps0} -- TOP MIS->'?' killed (the WIN):")
+    for (cb, wb), n in killed.most_common(12):
+        print(f"    {n:4d}  {cb} -> {wb}")
 
 
 def main() -> None:
