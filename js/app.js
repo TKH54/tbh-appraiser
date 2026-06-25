@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zam";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zam";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zam";
+import { Matcher, _internal } from "./recognize.js?v20260616zan";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zan";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zan";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.22";
+const APP_VERSION = "1.6.23";
 const CHANGELOG = [
+  { v: "1.6.23", d: "2026/6/25",
+    ja: "「価格を更新」ボタンを追加（記念コインと査定結果の近く）。再スキャンせずに最新の価格・期待値へ更新できます。",
+    en: "Added a 'Refresh prices' button (by the coins and your scan results) — pull the latest prices/EV without re-scanning." },
   { v: "1.6.22", d: "2026/6/25",
     ja: "再開直後の価格表示を修正：取引が薄く古い中央値しか無い銘柄が高値のまま固まる問題を解消し、実勢（深い板の現在最安値）を反映するようにしました。",
     en: "Fixed reopening prices: items stuck on a stale pre-freeze median now reflect the live market (a deep lowest-ask far below it)." },
@@ -129,6 +132,14 @@ async function loadData() {
 // if the tab has been open for hours (the bot refreshes it every ~10 min).
 // The unique query string skips both browser and CDN caches; on failure we
 // silently keep the copy already in memory.
+// "Refresh prices" button: pull the latest snapshot and re-render (table/coin/
+// plan) WITHOUT re-scanning. applyMode() also re-stamps the banner time/unlock.
+async function refreshPricesAndRender(btn) {
+  const lbl = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = (lbl || "") + " …"; }
+  try { await refreshPrices(); applyMode(); renderAll(); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = lbl; } }
+}
 async function refreshPrices() {
   try {
     const r = await fetch("data/prices.json?t=" + Date.now(), { cache: "no-store" });
@@ -1053,6 +1064,10 @@ function applyLang() {
   set("chTitle", "chlog_title");
   renderChangelog();
   $("tPriceRefresh").textContent = t("price_refresh");
+  for (const _id of ["priceRefreshG", "priceRefreshR"]) {
+    const _b = $(_id);
+    if (_b) { _b.textContent = t("price_refresh_btn"); _b.onclick = () => refreshPricesAndRender(_b); }
+  }
   set("tPrivacy", "privacy"); set("tUnofficial", "unofficial");
   set("popTitle", "pop_title"); set("popRarLbl", "pop_rar");
   set("learnNote", "learn_note");
