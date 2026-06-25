@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zal";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zal";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zal";
+import { Matcher, _internal } from "./recognize.js?v20260616zam";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zam";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zam";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +13,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.21";
+const APP_VERSION = "1.6.22";
 const CHANGELOG = [
+  { v: "1.6.22", d: "2026/6/25",
+    ja: "再開直後の価格表示を修正：取引が薄く古い中央値しか無い銘柄が高値のまま固まる問題を解消し、実勢（深い板の現在最安値）を反映するようにしました。",
+    en: "Fixed reopening prices: items stuck on a stale pre-freeze median now reflect the live market (a deep lowest-ask far below it)." },
   { v: "1.6.16", d: "2026/6/16",
     ja: "みんなの修正データを反映し、約37種類のアイテムの自動認識を追加・改善しました（認識精度アップ）。",
     en: "Folded in more of everyone's fixes: auto-recognition added or improved for ~37 item types — better accuracy." },
@@ -151,6 +154,19 @@ const marketUrl = h => `https://steamcommunity.com/market/listings/${DATA.meta.a
 const marketSearchUrl = base => `https://steamcommunity.com/market/search?appid=${DATA.meta.appid}&q=${encodeURIComponent(base)}&l=${STEAM_LANG[LANG] || "english"}`;
 
 // ---------------- price helpers ----------------
+// Realistic per-unit value. Normally the median of real sales (p.m) or the last
+// known median (p.lm). Two market distortions are corrected via the live ask (p.p):
+//  - sell-freeze: a lone INFLATED ask sits ABOVE the real median -> trust the median.
+//  - reopen CRASH: the median is STALE-HIGH while a DEEP ask market (q>=STALE_Q) sits
+//    far below it (ask < ref*STALE_FACTOR) -> the market moved down, use the live ask.
+const STALE_FACTOR = 0.5;   // ask below this fraction of the median ref = crashed market
+const STALE_Q = 10;         // ...this many listings deep = real undercutting, not a lone lowball
+function realUnit(p) {
+  if (!p) return null;
+  const ref = p.m ?? p.lm;
+  if (ref != null && p.p != null && p.p < ref * STALE_FACTOR && (p.q || 0) >= STALE_Q) return p.p;
+  return ref ?? p.p ?? null;
+}
 function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
   if (mode === "base") {
     const b = DATA.baseline[hash];
@@ -161,7 +177,7 @@ function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
   // median of real sales (p.m) is the true value; if Steam has no recent sales
   // (during the sell-freeze it returns only a lone, inflated lowest ask) use the
   // last KNOWN median (p.lm) instead of that ask; ask (p.p) only as last resort.
-  return p.m ?? p.lm ?? p.p ?? null;
+  return realUnit(p);
 }
 function unitPrice(hash) { return unitPriceIn(hash, MODE); }   // main table -> global toggle
 
@@ -198,7 +214,7 @@ function lowestAskNote(hash) {
   if (MODE !== "cur") return "";
   const p = DATA.prices?.items?.[hash];
   if (!p || p.p == null) return "";
-  const shown = p.m ?? p.lm ?? null;        // the value we actually display
+  const shown = realUnit(p);                // displayed value (incl. reopen stale-median override)
   if (shown == null) return "";             // we're already showing the ask itself
   if (Math.abs(p.p - shown) < Math.max(1, shown * 0.02)) return "";   // ~equal: don't clutter
   return `<span class="ask" title="${esc(t("price_low_tip"))}">${esc(t("price_low"))} ${money(p.p)}</span>`;
