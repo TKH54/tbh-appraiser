@@ -1,8 +1,8 @@
 // Full scan pipeline: screenshot -> warehouse cells -> identified items.
 // Ports matcher.py identify() on top of detect.js + recognize.js.
 
-import { readWarehouse } from "./detect.js?v20260616zak";
-import { Matcher, _internal } from "./recognize.js?v20260616zak";
+import { readWarehouse } from "./detect.js?v20260616zal";
+import { Matcher, _internal } from "./recognize.js?v20260616zal";
 const { crop, borderRarity, vecFromItem, extractFlood, bgr2hsv } = _internal;
 
 // The red "can't equip" X (lower-right) appears ONLY on equipment — materials
@@ -22,6 +22,10 @@ function hasCantEquipX(cell) {
 }
 
 const MATCH_MAX_DIST = 0.08;
+// Ambiguity guard: downgrade a confident match to '?' (review) when the nearest
+// DIFFERENT item is within this margin of the winner. A confident WRONG id is
+// worse than a '?' the user resolves (see seed_regression --margin-sweep).
+const AMBIG_MARGIN = 0.005;
 const NON_SELLABLE = new Set(["Common", "Uncommon", "Rare"]);
 const GRADE_ORDER = ["Legendary", "Immortal", "Arcana", "Beyond", "Celestial", "Divine", "Cosmic"];
 
@@ -117,7 +121,10 @@ export function identifyCell(matcher, vbb, cell, skips = []) {
     // Equipment learned hits keep the generous bar (getDisplayMedia colour
     // shift inflates capture-vs-capture distances slightly).
     const bar = isMaterial(top.base) ? 0.05 : (top.learned ? LEARN_MAX : MATCH_MAX_DIST);
-    if (top.dist <= bar) { matched = true; base = top.base; isLearned = !!top.learned; }
+    // ambiguity guard: a different item almost as close -> don't auto-commit
+    const rival = scored.find(s => s.base !== top.base);
+    const ambiguous = rival && (rival.dist - top.dist) < AMBIG_MARGIN;
+    if (top.dist <= bar && !ambiguous) { matched = true; base = top.base; isLearned = !!top.learned; }
   }
 
   const fin = (o) => ({ base, rarity, hash: null, tradeable: false, status: "unmatched",
