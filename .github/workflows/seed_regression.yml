@@ -16,6 +16,9 @@ on:
       edge_sweep:
         description: "edge-weight sweep, e.g. 0,0.1,0.3,0.5,1.0 (runs top1 sweep instead of the diff)"
         default: ""
+      margin_sweep:
+        description: "ambiguity-guard eps sweep, e.g. 0.005,0.01,0.02,0.03,0.05 (runs '?'-vs-MIS tradeoff instead of the diff)"
+        default: ""
       rate:
         description: "hours: report fixes(labels)/hour over the last N hours (instead of the diff)"
         default: ""
@@ -63,6 +66,8 @@ jobs:
             python scripts/seed_regression.py --rate "${{ github.event.inputs.rate }}"
           elif [ -n "${{ github.event.inputs.edge_sweep }}" ]; then
             python scripts/seed_regression.py --edge-sweep "${{ github.event.inputs.edge_sweep }}"
+          elif [ -n "${{ github.event.inputs.margin_sweep }}" ]; then
+            python scripts/seed_regression.py --margin-sweep "${{ github.event.inputs.margin_sweep }}" --bar "${{ github.event.inputs.bar || '0.075' }}"
           else
             ARGS="--bar ${{ github.event.inputs.bar || '0.075' }}"
             [ -f baseline_seed.json ] && ARGS="$ARGS --baseline baseline_seed.json"

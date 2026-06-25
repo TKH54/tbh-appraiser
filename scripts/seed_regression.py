@@ -220,6 +220,53 @@ def summarize(res):
     return c["correct"], c["mis"], c["unresolved"]
 
 
+def margin_sweep(labels, bases, V, M, bar, eps_list):
+    """Measure an AMBIGUITY GUARD: a confident match (nearest within `bar`) is
+    turned into '?' when a DIFFERENT-base ref is almost as close — margin
+    (d2 - d1) < eps. Reports, per eps, how many MIS get killed (the win) vs how
+    many CORRECT also become '?' (the collateral) and the resulting '?' rate.
+    Read-only; no production change."""
+    R = V.shape[0]
+    Vr = V.reshape(R, 1024, 3)
+    uniq = {b: i for i, b in enumerate(sorted(set(bases)))}
+    bid = np.array([uniq[b] for b in bases])
+    recs = []          # (is_correct, margin) for cells currently RESOLVED (d1<=bar)
+    n_unres0 = 0       # cells already '?' (d1>bar) — guard doesn't touch them
+    for claimed, (va, ma) in labels:
+        keep = M | ma
+        cnt = keep.sum(1)
+        diff = Vr - va.reshape(1024, 3)
+        per = np.einsum("ijk,ijk->ij", diff, diff)
+        s = (per * keep).sum(1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mse = s / (cnt * 3)
+        mse[cnt < 60] = 1e9
+        j = int(np.argmin(mse))
+        d1 = float(mse[j])
+        if d1 > bar:
+            n_unres0 += 1
+            continue
+        mse2 = mse.copy()
+        mse2[bid == bid[j]] = 1e9          # exclude all refs of the winner's base
+        d2 = float(mse2.min())
+        recs.append((bases[j] == claimed, d2 - d1))
+    total = len(labels)
+    base_correct = sum(1 for ok, _ in recs if ok)
+    base_mis = sum(1 for ok, _ in recs if not ok)
+    print(f"\nAMBIGUITY-GUARD SWEEP (single-sig, {total} labels, bar {bar}):")
+    print(f"  NO GUARD:  correct {base_correct} | MIS {base_mis} | '?' {n_unres0}"
+          f"  ('?' = {100*n_unres0/total:.1f}%)")
+    print(f"  {'eps':>6}  {'MIS_killed':>10}  {'correct_lost':>12}  {'MIS_left':>8}"
+          f"  {'?_rate':>7}  {'?_Δpp':>6}  {'kill:lose':>9}")
+    for eps in eps_list:
+        mis_killed = sum(1 for ok, mg in recs if (not ok) and mg < eps)
+        correct_lost = sum(1 for ok, mg in recs if ok and mg < eps)
+        q_total = n_unres0 + mis_killed + correct_lost
+        ratio = f"{mis_killed/max(correct_lost,1):.2f}:1"
+        print(f"  {eps:>6}  {mis_killed:>10}  {correct_lost:>12}  {base_mis-mis_killed:>8}"
+              f"  {100*q_total/total:>6.1f}%  {100*(mis_killed+correct_lost)/total:>+5.1f}  {ratio:>9}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", help="prior learned_seed.json to diff against")
@@ -234,6 +281,9 @@ def main() -> None:
     ap.add_argument("--render", help="base name: render its label sigs + ref to a PNG")
     ap.add_argument("--render-n", type=int, default=23)
     ap.add_argument("--render-out", default="probe.png")
+    ap.add_argument("--margin-sweep",
+                    help="comma eps list (e.g. 0.005,0.01,0.02,0.03,0.05) -> ambiguity-guard "
+                         "'?'-vs-MIS tradeoff on the CURRENT seed (read-only measurement)")
     args = ap.parse_args()
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
@@ -274,6 +324,10 @@ def main() -> None:
     catalog = load_refs()
     cur_seed = load_seed(DATA / "learned_seed.json")
     cb, cV, cM = stack(catalog + cur_seed)
+    if args.margin_sweep:
+        eps_list = [float(x) for x in args.margin_sweep.split(",")]
+        margin_sweep(labels, cb, cV, cM, args.bar, eps_list)
+        return
     if args.edge_sweep:
         weights = [float(x) for x in args.edge_sweep.split(",")]
         correct, used = edge_sweep(labels, cb, cV, cM, weights)
