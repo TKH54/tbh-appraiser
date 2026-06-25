@@ -213,6 +213,22 @@ def update_history(items: dict[str, dict], rate: float) -> None:
     HIST.write_text(json.dumps(hist, separators=(",", ":")), encoding="utf-8")
 
 
+STALE_FACTOR = 0.5   # ask below this fraction of the median ref = crashed market
+STALE_Q = 10         # ...and this deep = real undercutting, not a lone lowball
+
+def _real_unit(v: dict):
+    """Trusted per-unit value, crash-corrected: a median (m) or last-median (lm),
+    but when a DEEP ask market (q>=STALE_Q) sits far below it (ask<ref*STALE_FACTOR)
+    the market moved DOWN -> use the live ask. Mirrors the frontend realUnit()."""
+    ref = v.get("m") if v.get("m") is not None else v.get("lm")
+    if ref is None:
+        return None
+    p, q = v.get("p"), v.get("q") or 0
+    if p is not None and p < ref * STALE_FACTOR and q >= STALE_Q:
+        return p
+    return ref
+
+
 def grade_averages(items: dict[str, dict], rate: float) -> dict:
     """Per-grade mean over ' (Grade) A' gear — the coin-gacha spin EV's 現在価格
     basis. Only TRUSTED prices count: a real recent-sale median (m) or the last
@@ -226,7 +242,7 @@ def grade_averages(items: dict[str, dict], rate: float) -> dict:
         m = re.match(r"^.* \((\w+)\) A$", hn)
         if not m:
             continue
-        price = v.get("m") or v.get("lm")     # trusted only; skip inflated asks
+        price = _real_unit(v)                # trusted median, crash-corrected to the live deep ask
         if price:
             vals[m.group(1)].append(price)
     return {g: round(sum(xs) / len(xs), 2) for g, xs in vals.items() if len(xs) >= 3}
