@@ -1,9 +1,9 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zan";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zan";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zan";
+import { Matcher, _internal } from "./recognize.js?v20260616zao";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260616zao";
+import { T, LANGS, pickLang } from "./i18n.js?v20260616zao";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,7 +13,7 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.23";
+const APP_VERSION = "1.6.24";
 const CHANGELOG = [
   { v: "1.6.23", d: "2026/6/25",
     ja: "「価格を更新」ボタンを追加（記念コインと査定結果の近く）。再スキャンせずに最新の価格・期待値へ更新できます。",
@@ -134,10 +134,35 @@ async function loadData() {
 // silently keep the copy already in memory.
 // "Refresh prices" button: pull the latest snapshot and re-render (table/coin/
 // plan) WITHOUT re-scanning. applyMode() also re-stamps the banner time/unlock.
+// count-up a single DISPLAYED number (already in the user's currency) from 0 to
+// its value, preserving the symbol/decimals. Animates the shown number only, so
+// no double fx-conversion (re-calling money() would convert again). Exact at end.
+function countUpNum(el, dur = 600) {
+  const txt = el.textContent;
+  const m = txt.match(/-?[\d,]+(\.\d+)?/);
+  if (!m) return;
+  const target = parseFloat(m[0].replace(/,/g, ""));
+  if (!isFinite(target) || target < 1) return;
+  const pre = txt.slice(0, m.index), suf = txt.slice(m.index + m[0].length);
+  const dec = m[1] ? m[1].length - 1 : 0;
+  const fmt = n => pre + n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }) + suf;
+  const t0 = performance.now();
+  const step = now => {
+    const k = Math.min(1, (now - t0) / dur);
+    el.textContent = fmt(target * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) requestAnimationFrame(step); else el.textContent = txt;
+  };
+  requestAnimationFrame(step);
+}
+// テレレレ: count every price / coin-EV cell up from 0 (table + coin panel)
+function animatePriceCells() {
+  document.querySelectorAll("#rows td.num1 > span:first-child, #rows td > span.num, #gRows td > span:first-child")
+    .forEach(el => countUpNum(el));
+}
 async function refreshPricesAndRender(btn) {
   const lbl = btn ? btn.textContent : null;
   if (btn) { btn.disabled = true; btn.textContent = (lbl || "") + " …"; }
-  try { await refreshPrices(); applyMode(); renderAll(); }
+  try { await refreshPrices(); applyMode(); window._lastTotal = 0; renderAll(); animatePriceCells(); }
   finally { if (btn) { btn.disabled = false; btn.textContent = lbl; } }
 }
 async function refreshPrices() {
