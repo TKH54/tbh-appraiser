@@ -31,13 +31,17 @@ S.headers.update({"User-Agent": "tbh-appraiser-price-snapshot/1.0 (polite; 1 req
 
 def get(url, **params):
     for attempt in range(5):
-        r = S.get(url, params=params, timeout=20)
+        try:
+            r = S.get(url, params=params, timeout=20)
+        except requests.RequestException:
+            time.sleep(min(15 * (attempt + 1), 30))
+            continue
         if r.status_code == 200:
             try:
                 return r.json()
             except ValueError:
                 pass
-        time.sleep(15 * (attempt + 1))      # back off hard on 429/5xx
+        time.sleep(min(15 * (attempt + 1), 30))   # back off on 429/5xx, capped
     return None
 
 
@@ -95,11 +99,22 @@ def enrich_volumes(items: dict[str, dict]) -> None:
     from the previous prices.json — they are 24h aggregates and barely move
     inside an hour, while the lowest ask / listings (from the cheap sweep) get
     refreshed every run. This lets a fast job run every ~10 minutes."""
+    try:
+        prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
+    except Exception:
+        prev = {}
+
+    def carry_vol(hn, v):
+        """Volume (v) is a pure 24h aggregate — safe to carry over a missed fetch
+        so it doesn't flicker to '—'. The MEDIAN is deliberately NOT carried here:
+        leaving m unset lets carry_last_median() keep it as a STALE lm, which the
+        realUnit logic correctly distrusts vs a fresh deep ask (the 1.6.26 fix)."""
+        pv = prev.get(hn)
+        if pv and "v" in pv:
+            v["v"] = pv["v"]
+
     if os.environ.get("PRICES_FAST"):
-        try:
-            prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
-        except Exception:
-            prev = {}
+        # carry BOTH m and v: <1h old, so the fresh-median (m) label still holds.
         for hn, v in items.items():
             pv = prev.get(hn)
             if pv:
@@ -108,11 +123,27 @@ def enrich_volumes(items: dict[str, dict]) -> None:
                 if "v" in pv:
                     v["v"] = pv["v"]
         return
+
+    # FULL refresh is bounded by a wall-clock budget. When Steam throttles
+    # (long 429 backoffs during the market reopening), the per-item median fetch
+    # can otherwise run past the job's 45-min timeout; a timed-out job is KILLED
+    # before its commit/push step, silently breaking the self-chaining loop and
+    # freezing prices for hours. Once the budget is spent we stop fetching and let
+    # the remaining items fall through to carry_last_median() (stale lm) — exactly
+    # how a per-item miss is already handled — so the run always finishes in time
+    # to push and the chain stays alive.
+    deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC", "1500"))
+    skipped = 0
     for hn, v in items.items():
+        if time.time() > deadline:
+            carry_vol(hn, v)
+            skipped += 1
+            continue
         d = get("https://steamcommunity.com/market/priceoverview/",
                 appid=APPID, currency=8, market_hash_name=hn)
         time.sleep(4.5)
         if not d or not d.get("success"):
+            carry_vol(hn, v)
             continue
         m = re.search(r"[\d,.]+", d.get("median_price") or "")
         if m:
@@ -120,6 +151,11 @@ def enrich_volumes(items: dict[str, dict]) -> None:
         vol = re.sub(r"[^\d]", "", d.get("volume") or "")
         if vol:
             v["v"] = int(vol)
+        else:
+            carry_vol(hn, v)
+    if skipped:
+        print(f"enrich budget spent: skipped fresh median for {skipped} item(s) "
+              f"(carried stale lm)", file=sys.stderr)
 
 
 def detect_unlocked(items: dict[str, dict]) -> bool:

@@ -14,7 +14,9 @@ on:
     branches: [main]              # the chain link: every bot (deploy-key) push fires the
                                   # next run; human pushes just splice into the same chain
   schedule:
-    - cron: "11,41 * * * *"       # best-effort restarter only
+    - cron: "1,11,21,31,41,51 * * * *"   # best-effort restarter: every 10 min so a
+                                         # broken chain self-heals fast. Harmless when
+                                         # healthy — concurrency folds it into the chain.
   workflow_dispatch:              # manual run / chain starter
     inputs:
       force_unlocked:
@@ -29,7 +31,9 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50          # margin over the build's wall-clock budget
+                                 # (PRICES_BUDGET_SEC, default 1500s) so a slow
+                                 # full refresh still reaches the commit/push step
     steps:
       - uses: actions/checkout@v5
         with:
