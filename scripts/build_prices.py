@@ -91,68 +91,72 @@ def derive_rate(items: dict[str, dict]) -> float:
     return 155.0    # fallback if rate underivable
 
 
-def enrich_volumes(items: dict[str, dict]) -> None:
-    """Per-item priceoverview (JPY): median of recent real sales + units sold
-    in 24h. ~5s per listed item (e.g. 250 items ≈ 20 min) — run hourly.
+def enrich_volumes(items: dict[str, dict], prev_doc: dict) -> int:
+    """Per-item priceoverview (JPY): median of recent real sales (m) + units sold
+    in 24h (v), for a ROTATING SHARD of the catalog.
 
-    PRICES_FAST=1 skips the slow fetch and instead CARRIES OVER median/volume
-    from the previous prices.json — they are 24h aggregates and barely move
-    inside an hour, while the lowest ask / listings (from the cheap sweep) get
-    refreshed every run. This lets a fast job run every ~10 minutes."""
-    try:
-        prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
-    except Exception:
-        prev = {}
+    Why a shard: the catalog has grown past ~740 items; at ~4.5s/item a full pass
+    is ~56 min — longer than the job timeout, so the old "refresh everything once
+    an hour" never completed and m/v stayed permanently stale (e.g. coins showing
+    no volume while actually selling 20k/day). Instead every run refreshes
+    PRICES_SHARD items starting at a persisted offset (`_eoff`) and advances it,
+    so the whole catalog cycles every ceil(N/shard) runs (~1h) and each run stays
+    well under the timeout. The cheap sweep still refreshes the lowest ask/listing
+    count for ALL items every run.
 
-    def carry_vol(hn, v):
-        """Volume (v) is a pure 24h aggregate — safe to carry over a missed fetch
-        so it doesn't flicker to '—'. The MEDIAN is deliberately NOT carried here:
-        leaving m unset lets carry_last_median() keep it as a STALE lm, which the
-        realUnit logic correctly distrusts vs a fresh deep ask (the 1.6.26 fix)."""
-        pv = prev.get(hn)
-        if pv and "v" in pv:
-            v["v"] = pv["v"]
+    Items outside this run's shard carry over their previous m/v — a 24h aggregate
+    barely moves inside ~1h, so the carried median keeps its fresh (m) label.
+    Returns the new offset to persist in prices.json."""
+    prev = prev_doc.get("items", {})
 
-    if os.environ.get("PRICES_FAST"):
-        # carry BOTH m and v: <1h old, so the fresh-median (m) label still holds.
-        for hn, v in items.items():
-            pv = prev.get(hn)
-            if pv:
-                if "m" in pv:
-                    v["m"] = pv["m"]
-                if "v" in pv:
-                    v["v"] = pv["v"]
-        return
-
-    # FULL refresh is bounded by a wall-clock budget. When Steam throttles
-    # (long 429 backoffs during the market reopening), the per-item median fetch
-    # can otherwise run past the job's 45-min timeout; a timed-out job is KILLED
-    # before its commit/push step, silently breaking the self-chaining loop and
-    # freezing prices for hours. Once the budget is spent we stop fetching and let
-    # the remaining items fall through to carry_last_median() (stale lm) — exactly
-    # how a per-item miss is already handled — so the run always finishes in time
-    # to push and the chain stays alive.
-    deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC", "1500"))
-    skipped = 0
+    # baseline: carry last known m + v for every item (kept <~1h fresh by rotation)
     for hn, v in items.items():
-        if time.time() > deadline:
-            carry_vol(hn, v)
-            skipped += 1
-            continue
+        pv = prev.get(hn)
+        if pv:
+            if "m" in pv:
+                v["m"] = pv["m"]
+            if "v" in pv:
+                v["v"] = pv["v"]
+
+    if os.environ.get("PRICES_NOENRICH"):       # keepalive / pure-sweep escape hatch
+        return int(prev_doc.get("_eoff", 0) or 0)
+
+    keys = sorted(items)
+    n = len(keys)
+    if not n:
+        return 0
+    shard = int(os.environ.get("PRICES_SHARD", "200"))
+    # wall-clock backstop so a throttled Steam (long 429 backoffs) can't push the
+    # run past the job timeout — a timed-out job is killed before its push step and
+    # breaks the self-chaining loop. The offset only advances by what we actually
+    # processed, so a short run just resumes the rotation next time.
+    deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC", "1500"))
+    off = int(prev_doc.get("_eoff", 0) or 0) % n
+    done = 0
+    while done < shard and done < n and time.time() < deadline:
+        hn = keys[(off + done) % n]
+        v = items[hn]
         d = get("https://steamcommunity.com/market/priceoverview/",
                 appid=APPID, currency=8, market_hash_name=hn)
         time.sleep(4.5)
+        done += 1
         if not d or not d.get("success"):
-            carry_vol(hn, v)
-            continue
+            continue                            # transient -> keep carried baseline
         m = re.search(r"[\d,.]+", d.get("median_price") or "")
         if m:
             v["m"] = float(m.group(0).replace(",", ""))
+        else:
+            v.pop("m", None)                    # confirmed no recent sale -> drop
+            #                                     stale m so it falls back to lm
         vol = re.sub(r"[^\d]", "", d.get("volume") or "")
         if vol:
             v["v"] = int(vol)
         else:
-            carry_vol(hn, v)
+            v.pop("v", None)                    # no 24h sales -> clear volume
+    new_off = (off + done) % n
+    print(f"enrich: refreshed {done}/{n} items, offset {off} -> {new_off}",
+          file=sys.stderr)
+    return new_off
     if skipped:
         print(f"enrich budget spent: skipped fresh median for {skipped} item(s) "
               f"(carried stale lm)", file=sys.stderr)
@@ -303,14 +307,19 @@ def main() -> None:
         print("sweep failed", file=sys.stderr)
         sys.exit(1)
     rate = derive_rate(items)
+    try:
+        prev_doc = json.loads(OUT.read_text(encoding="utf-8"))
+    except Exception:
+        prev_doc = {}
     unlocked = detect_unlocked(items)      # before enrich: reads previous OUT
-    enrich_volumes(items)
+    eoff = enrich_volumes(items, prev_doc)  # rotating shard; returns next offset
     carry_last_median(items, rate)         # after enrich (needs m), before history/gev
     update_history(items, rate)
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rate": rate,
         "unlocked": unlocked,
+        "_eoff": eoff,                     # rotating enrich offset (persisted)
         "gev": grade_averages(items, rate),
         "fx": fetch_fx(),
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],

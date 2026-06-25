@@ -44,18 +44,12 @@ jobs:
       - name: pace the loop (~10-min cadence; immediate on manual dispatch)
         if: github.event_name != 'workflow_dispatch'
         run: sleep 540
-      - name: decide mode (full refresh once per hour, when minute < 10)
-        id: mode
-        run: |
-          if [ "$(date -u +%M)" -lt 10 ]; then
-            echo "fast=" >> "$GITHUB_OUTPUT"
-          else
-            echo "fast=1" >> "$GITHUB_OUTPUT"
-          fi
       - name: snapshot prices (failure must not break the chain)
+        # the cheap sweep refreshes EVERY item's lowest ask/listing count each run;
+        # median + 24h volume are refreshed for a rotating shard (PRICES_SHARD), so
+        # the whole catalog cycles every ~hour without any run exceeding the timeout.
         run: python scripts/build_prices.py || echo "::warning::price build failed; sending keepalive"
         env:
-          PRICES_FAST: ${{ steps.mode.outputs.fast }}
           FORCE_UNLOCKED: ${{ github.event.inputs.force_unlocked }}
       - name: commit and push (this push triggers the next run)
         run: |
