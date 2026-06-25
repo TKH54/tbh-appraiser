@@ -217,16 +217,15 @@ STALE_FACTOR = 0.5   # ask below this fraction of the median ref = crashed marke
 STALE_Q = 10         # ...and this deep = real undercutting, not a lone lowball
 
 def _real_unit(v: dict):
-    """Trusted per-unit value, crash-corrected: a median (m) or last-median (lm),
-    but when a DEEP ask market (q>=STALE_Q) sits far below it (ask<ref*STALE_FACTOR)
-    the market moved DOWN -> use the live ask. Mirrors the frontend realUnit()."""
-    ref = v.get("m") if v.get("m") is not None else v.get("lm")
-    if ref is None:
-        return None
+    """Trusted per-unit value. A fresh real-sale median (m) is best; absent that, lm is
+    the LAST median which the slow/flaky per-item fetch leaves stale in EITHER direction,
+    so prefer the always-fresh DEEP ask market (q>=STALE_Q) over it. Mirrors realUnit()."""
+    if v.get("m") is not None:
+        return v["m"]
     p, q = v.get("p"), v.get("q") or 0
-    if p is not None and p < ref * STALE_FACTOR and q >= STALE_Q:
+    if p is not None and q >= STALE_Q:
         return p
-    return ref
+    return v.get("lm") if v.get("lm") is not None else p
 
 
 def grade_averages(items: dict[str, dict], rate: float) -> dict:
