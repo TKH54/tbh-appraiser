@@ -1,13 +1,17 @@
-# Self-chaining price refresh (⑨ near-real-time prices, no PC needed):
-# each run sleeps ~9 min, snapshots prices, then COMMITS VIA THE DEPLOY KEY
-# (SSH). Unlike GITHUB_TOKEN pushes, deploy-key pushes fire `push` events, so
-# every snapshot triggers the next run — a continuous ~10-min loop hosted
-# entirely on GitHub. GitHub's cron proved near-dead on this repo (2 fires in
-# 24h), so it remains only as a chain RESTARTER if a run ever fails to push.
+# Self-chaining price refresh (near-real-time prices, no PC needed). Each run:
+#   1. FAST: sweep EVERY item's lowest ask + listing count (~1-2 min) and write
+#      prices.json — so the displayed `t` advances every cycle.
+#   2. DETAIL: refresh median + 24h volume for a small rotating shard
+#      (PRICES_SHARD, default 60) — the whole catalog cycles every ~1h.
+# It then COMMITS VIA THE DEPLOY KEY (SSH). Unlike GITHUB_TOKEN pushes, deploy-key
+# pushes fire `push` events, so every snapshot triggers the next run — a
+# continuous ~10-min loop hosted entirely on GitHub. A run normally finishes in
+# ~5-7 min (well under timeout-minutes); the cron is a best-effort RESTARTER if a
+# run ever fails to push.
 #
 # Stop the chain: Actions tab -> price-snapshot -> "..." -> Disable workflow.
 # Restart it:     enable + Run workflow (leave inputs empty).
-# Full refresh (median/volume, ~16 min) happens on the cycle where minute<10.
+# One-shot full median/volume backfill: Run workflow with shard=742 delay=3.0.
 name: price-snapshot
 on:
   push:
@@ -24,15 +28,15 @@ on:
         required: false
         default: ""
       shard:
-        description: "items to refresh median/volume this run (empty=default 200; set high for a one-shot full backfill)"
+        description: "items to refresh median/volume this run (empty=default 60; set high e.g. 742 for a one-shot full backfill)"
         required: false
         default: ""
       delay:
-        description: "per-item pacing seconds (empty=default 4.5; lower to fit a big backfill under the timeout, watch for 429s)"
+        description: "per-item pacing seconds (empty=default 2.5; raise if you see 429s)"
         required: false
         default: ""
       budget_sec:
-        description: "wall-clock cap for the median/volume pass (empty=default 1500; raise for a big backfill)"
+        description: "wall-clock cap for the median/volume pass (empty=default 600; raise for a big backfill)"
         required: false
         default: ""
 permissions:
@@ -43,9 +47,10 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 50          # margin over the build's wall-clock budget
-                                 # (PRICES_BUDGET_SEC, default 1500s) so a slow
-                                 # full refresh still reaches the commit/push step
+    timeout-minutes: 20          # a normal run is ~5-7 min; this is margin for a
+                                 # throttled detail pass (PRICES_BUDGET_SEC=600).
+                                 # Tight enough that a truly stuck run is killed
+                                 # fast so the chain self-heals.
     steps:
       - uses: actions/checkout@v5
         with:
@@ -54,12 +59,14 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install requests
       - name: pace the loop (~10-min cadence; immediate on manual dispatch)
+        # build is ~5-7 min; this short pace brings the cycle to ~7-9 min without
+        # the old 9-min idle that made each run overshoot 10 min.
         if: github.event_name != 'workflow_dispatch'
-        run: sleep 540
+        run: sleep 120
       - name: snapshot prices (failure must not break the chain)
-        # the cheap sweep refreshes EVERY item's lowest ask/listing count each run;
-        # median + 24h volume are refreshed for a rotating shard (PRICES_SHARD), so
-        # the whole catalog cycles every ~hour without any run exceeding the timeout.
+        # PHASE 1 sweeps EVERY item's lowest ask/listing and writes prices.json
+        # fast; PHASE 2 refreshes a rotating shard's median/volume (PRICES_SHARD).
+        # Progress (items/offset/refreshed/elapsed) is logged to stderr.
         run: python scripts/build_prices.py || echo "::warning::price build failed; sending keepalive"
         env:
           FORCE_UNLOCKED: ${{ github.event.inputs.force_unlocked }}
