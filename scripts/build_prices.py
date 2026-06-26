@@ -62,33 +62,34 @@ def sweep() -> dict[str, dict]:
                 "q": it.get("sell_listings", 0),
             }
         start += len(d.get("results", [])) or 100
-        time.sleep(5)
+        time.sleep(2)
     return items
 
 
-def derive_rate(items: dict[str, dict]) -> float:
+def derive_rate(items: dict[str, dict]):
     """USD->JPY rate as Steam converts it: compare one liquid item's JPY
     lowest (priceoverview, currency=8) against its USD lowest from the sweep.
     Use a HIGH-priced liquid item so penny rounding doesn't skew the rate
-    (e.g. $0.05 vs ¥10 would read as 200)."""
+    (e.g. $0.05 vs ¥10 would read as 200). Returns None if it can't derive one
+    (throttled/down) — the caller then keeps the last known rate rather than
+    grinding through retries and slowing the fast phase. The rate is stable, so a
+    carried value is fine."""
     candidates = sorted(items.items(), key=lambda kv: -kv[1]["q"])
     candidates = [kv for kv in candidates if kv[1]["usd"] >= 1.0][:10] or candidates[:10]
     candidates.sort(key=lambda kv: -kv[1]["usd"])
-    for hash_name, v in candidates[:10]:
+    for hash_name, v in candidates[:4]:
         if v["usd"] <= 0:
             continue
         d = get("https://steamcommunity.com/market/priceoverview/",
                 appid=APPID, currency=8, market_hash_name=hash_name)
-        time.sleep(5)
-        if not d or not d.get("success") or not d.get("lowest_price"):
-            continue
-        m = re.search(r"[\d,.]+", d["lowest_price"])
-        if not m:
-            continue
-        jpy = float(m.group(0).replace(",", ""))
-        if jpy > 0:
-            return round(jpy / v["usd"], 2)
-    return 155.0    # fallback if rate underivable
+        if d and d.get("success") and d.get("lowest_price"):
+            m = re.search(r"[\d,.]+", d["lowest_price"])
+            if m:
+                jpy = float(m.group(0).replace(",", ""))
+                if jpy > 0:
+                    return round(jpy / v["usd"], 2)
+        time.sleep(2)
+    return None     # caller falls back to the last known rate
 
 
 def carry_mv_baseline(items: dict[str, dict], prev_doc: dict) -> None:
@@ -328,11 +329,11 @@ def main() -> None:
     if not items:
         print("sweep failed", file=sys.stderr)
         sys.exit(1)
-    rate = derive_rate(items)
     try:
         prev_doc = json.loads(OUT.read_text(encoding="utf-8"))
     except Exception:
         prev_doc = {}
+    rate = derive_rate(items) or prev_doc.get("rate") or 155.0
     unlocked = detect_unlocked(items)      # reads previous OUT
     prev_off = int(prev_doc.get("_eoff", 0) or 0)
     fx = fetch_fx()
