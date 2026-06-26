@@ -17,6 +17,9 @@ const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
 const APP_VERSION = "1.7.2";
 const CHANGELOG = [
+  { v: "1.7.2", d: "2026/6/27",
+    ja: "出品プランのアイテムにカーソルを合わせると、左の倉庫画像が自動でそのページに切り替わり、該当アイテムをハイライトするようにしました。複数ページでも在庫の場所が一目で分かります。",
+    en: "Hovering an item in the listing plan now switches the left warehouse image to the page that holds it and spotlights that item — so you can see where stock sits across multiple pages at a glance." },
   { v: "1.7.1", d: "2026/6/26",
     ja: "動作を軽量化：サムネイルをキャッシュして起動を高速化し、マイ倉庫の復元を初期表示の後に回すようにしました。出品プランは見ている時だけ再計算します。既にマイ倉庫がある場合はチュートリアル画像を省略。",
     en: "Lighter & faster: thumbnails are cached for a quicker start, My Warehouse restores after the first paint, and the listing plan only recomputes while you’re viewing it. The tutorial image is skipped once you have a saved warehouse." },
@@ -103,6 +106,8 @@ let GMODE = MODE;   // gacha "sell" basis — switchable INDEPENDENTLY of the ma
 let DATA = null;        // {items, vbb, matcher, tpl, baseline, gacha, meta, prices}
 let STREAM = null, VIDEO = null;
 let SCAN = null;        // {imgW,imgH, cells:[{...item, assigned, ignored}]}
+let _shownScan = null;  // which scan is actually painted in #scanBox — equals SCAN
+                        // normally, or a stocked page during a listing-plan hover-preview
 let SORT = JSON.parse(localStorage.getItem("tbh_sort") || '{"k":"total","d":-1}');
 let POP_I = -1;
 let STOCKS = [];           // ㉔ stocked pages [{scan,url,pageNo}] — scan is the FULL
@@ -604,21 +609,24 @@ function renderDiag(img, panel) {
   }, "image/png");
 }
 
-function drawScan() {
-  if (!SCAN) return;
+// draws a scan's warehouse image + cell overlays into #scanBox. Defaults to the
+// live editable SCAN; the listing-plan hover-preview passes another page's scan
+// with interactive=false (read-only overlays) so peeking can't mis-target edits.
+function drawScan(scan = SCAN, interactive = true) {
+  if (!scan) return;
   $("scanWrap").style.display = "block";
   const cvs = $("scanCanvas");
   // draw ROI cropped to the cells + padding
-  const cs = SCAN.cells;
+  const cs = scan.cells;
   const pad = 8;
   const x0 = Math.max(0, Math.min(...cs.map(c => c.x)) - pad);
   const y0 = Math.max(0, Math.min(...cs.map(c => c.y)) - pad);
-  const x1 = Math.min(SCAN.imgW, Math.max(...cs.map(c => c.x + c.w)) + pad);
-  const y1 = Math.min(SCAN.imgH, Math.max(...cs.map(c => c.y + c.h)) + pad);
-  SCAN.view = { x0, y0, w: x1 - x0, h: y1 - y0 };
+  const x1 = Math.min(scan.imgW, Math.max(...cs.map(c => c.x + c.w)) + pad);
+  const y1 = Math.min(scan.imgH, Math.max(...cs.map(c => c.y + c.h)) + pad);
+  scan.view = { x0, y0, w: x1 - x0, h: y1 - y0 };
   cvs.width = x1 - x0; cvs.height = y1 - y0;
   const im = new ImageData(x1 - x0, y1 - y0);
-  const src = SCAN.roi;
+  const src = scan.roi;
   for (let y = 0; y < cvs.height; y++) {
     for (let x = 0; x < cvs.width; x++) {
       const s = ((y + y0) * src.w + x + x0) * 3, d = (y * cvs.width + x) * 4;
@@ -630,7 +638,8 @@ function drawScan() {
   // display size is fixed by #scanBox CSS (560px) and the canvas fills it via
   // width:100%, so the on-screen size no longer follows the capture's scale
   cvs.style.width = "";
-  drawOverlays();
+  _shownScan = scan;
+  drawOverlays(scan, interactive);
 }
 
 // price-band border colours for confirmed cells (index = band p0..p9)
@@ -642,11 +651,11 @@ const BAND_BORDER = ["#4a515c", "#e6e9ef", "#7cb4ff", "#9cc8ff", "#ffff64",
 const BAND_BRIGHT = ["#6e7681", "#e6e9ef", "#7cb4ff", "#9cc8ff", "#ffff64",
                      "#ffe14a", "#3dd463", "#ff8000", "#ffd700", "#ff4040"];
 
-function drawOverlays() {
+function drawOverlays(scan = SCAN, interactive = true) {
   const box = $("scanBox");
   box.querySelectorAll(".ov").forEach(e => e.remove());
-  const { x0, y0, w, h } = SCAN.view;
-  SCAN.cells.forEach((c, i) => {
+  const { x0, y0, w, h } = scan.view;
+  scan.cells.forEach((c, i) => {
     const o = document.createElement("div");
     o.className = "ov " + (c.ignored ? "skip" : c.assigned ? "ok" : "review");
     o.style.left = ((c.x - x0) / w * 100) + "%";
@@ -668,10 +677,14 @@ function drawOverlays() {
       // show a muted ? so they know it's still clickable & rescuable
       o.innerHTML = '<span class="badge" style="background:#6e7681; box-shadow:none; animation:none;">?</span>';
     }
-    o.addEventListener("click", ev => openPop(i, ev));
+    // read-only preview (plan hover) draws another page: don't wire edits to it,
+    // and let clicks fall through so nothing targets the wrong page's cell.
+    if (interactive) o.addEventListener("click", ev => openPop(i, ev));
+    else o.style.pointerEvents = "none";
     box.appendChild(o);
   });
-  const need = SCAN.cells.filter(c => !c.assigned && !c.ignored).length;
+  if (!interactive) return;            // preview must not touch the live page's UI
+  const need = scan.cells.filter(c => !c.assigned && !c.ignored).length;
   // the click-to-fix hint now lives prominently in the legend above the canvas;
   // keep the area below the image clear so the layout stays put
   $("reviewMsg").innerHTML = "";
@@ -1101,7 +1114,9 @@ function setMode(m) {
   MODE = m;
   localStorage.setItem("tbh_mode", m);
   applyMode(); renderTable(); renderGacha(); renderPlan();
-  if (SCAN) drawOverlays();        // cell borders are price-band coloured
+  // recolour the borders on whatever page is on screen (the live page, or a
+  // stocked page held by a plan hover-preview) so image & overlays stay in sync
+  if (_shownScan) drawOverlays(_shownScan, _shownScan === SCAN);
 }
 $("modeCur").addEventListener("click", () => setMode("cur"));
 $("modeBase").addEventListener("click", () => setMode("base"));
@@ -1224,15 +1239,45 @@ function hlCells(hash, on) {
     o.classList.toggle("dim", on && !!hash && o.dataset.hash !== hash);
   });
 }
-// hovering a row in EITHER the main table or the listing plan spotlights the
-// matching warehouse cells (delegated; planBody is re-rendered each time)
-[$("rows"), $("planBody")].forEach(el => {
-  el.addEventListener("mouseover", e => {
-    const tr = e.target.closest("tr[data-hash]");
-    if (tr) hlCells(tr.dataset.hash, true);
-  });
-  el.addEventListener("mouseout", () => hlCells(null, false));
+// the main appraisal table only ever lists the page on screen, so hovering a row
+// just spotlights that item's cells (delegated; rows are re-rendered each scan).
+$("rows").addEventListener("mouseover", e => {
+  const tr = e.target.closest("tr[data-hash]");
+  if (tr) hlCells(tr.dataset.hash, true);
 });
+$("rows").addEventListener("mouseleave", () => hlCells(null, false));
+
+// ---- listing-plan hover preview: switch the left image to the item's page ----
+// the plan pools EVERY warehouse page, so a hovered item may live on a page the
+// left image isn't showing. Hovering draws that page and spotlights the item; the
+// image then STAYS on the last item you looked at (per request) instead of
+// snapping back. A stocked page is drawn read-only so the peek can never edit the
+// wrong page; the live SCAN page is drawn interactive as usual.
+let _hoverHash = null;
+// the page (live SCAN or a stocked scan) that actually holds this item's cell;
+// prefer the page already on screen so a hover there needs no redraw.
+function pageForHash(hash) {
+  const has = sc => !!sc && sc.cells.some(c => c.assigned === hash && !c.ignored);
+  if (has(SCAN)) return SCAN;
+  for (const st of STOCKS) if (has(st.scan)) return st.scan;
+  return null;
+}
+function previewItem(hash) {
+  if (hash === _hoverHash) return;             // still on the same row -> no rework
+  _hoverHash = hash;
+  const scan = pageForHash(hash);
+  if (scan && scan !== _shownScan) drawScan(scan, scan === SCAN);   // switch the left image
+  hlCells(hash, true);                         // spotlight it on the now-shown page
+}
+// snap the left image back to the live editable page (e.g. when leaving the plan
+// for the appraisal view, so the image matches the item table again).
+function syncShownToScan() { if (SCAN && _shownScan !== SCAN) drawScan(); }
+$("planBody").addEventListener("mouseover", e => {
+  const tr = e.target.closest("tr[data-hash]");
+  if (tr) previewItem(tr.dataset.hash);
+});
+// leaving the list keeps the last page shown (no redraw) — just drop the spotlight
+$("planBody").addEventListener("mouseleave", () => { _hoverHash = null; hlCells(null, false); });
 
 $("capBtn").addEventListener("click", connect);
 $("planJump").addEventListener("click", () => setView(VIEW === "plan" ? "appraisal" : "plan"));
@@ -1664,6 +1709,7 @@ function applyView() {
 function setView(v) {
   VIEW = v;
   if (v === "plan") renderPlan();                 // force a fresh body before showing
+  else syncShownToScan();                         // back to appraisal -> image follows SCAN again
   applyView();
   $("resCol")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
