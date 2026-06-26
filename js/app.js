@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626e";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626e";
-import { detectPageTab } from "./detect.js?v20260626e";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626e";
-import { T, LANGS, pickLang } from "./i18n.js?v20260626e";
+import { Matcher, _internal } from "./recognize.js?v20260626g";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626g";
+import { detectPageTab } from "./detect.js?v20260626g";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626g";
+import { T, LANGS, pickLang } from "./i18n.js?v20260626g";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -15,8 +15,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.7.1";
 const CHANGELOG = [
+  { v: "1.7.1", d: "2026/6/26",
+    ja: "動作を軽量化：サムネイルをキャッシュして起動を高速化し、マイ倉庫の復元を初期表示の後に回すようにしました。出品プランは見ている時だけ再計算します。既にマイ倉庫がある場合はチュートリアル画像を省略。",
+    en: "Lighter & faster: thumbnails are cached for a quicker start, My Warehouse restores after the first paint, and the listing plan only recomputes while you’re viewing it. The tutorial image is skipped once you have a saved warehouse." },
   { v: "1.7.0", d: "2026/6/26",
     ja: "複数ページを「マイ倉庫」として自動保存。ブラウザを再起動しても復元されます（端末内のみ・外部送信なし）。ページ番号は自動検出し、数字タブで切り替えできます。",
     en: "Multi-page “My Warehouse”: pages auto-save and are restored even after a browser restart (on-device only, never uploaded). Page numbers are auto-detected; switch pages with the number tabs." },
@@ -1263,8 +1266,8 @@ function sortStocks() { STOCKS.sort((a, b) => (a.pageNo ?? 99) - (b.pageNo ?? 99
 
 // ---- ㉕ "My Warehouse": persist STOCKS in IndexedDB across browser restarts ----
 const SCHEMA = 1;
-// build a cropped thumbnail objectURL straight from a scan's ROI pixels (same
-// crop as drawScan) — works for restored pages whose canvas isn't drawn.
+// build a cropped thumbnail PNG Blob straight from a scan's ROI pixels (same
+// crop as drawScan) — only used as a FALLBACK for old saves with no cached thumb.
 function makeThumb(scan) {
   return new Promise(res => {
     const r = scan.roi, cs = scan.cells;
@@ -1284,7 +1287,7 @@ function makeThumb(scan) {
       im.data[d + 2] = r.data[s]; im.data[d + 3] = 255;
     }
     cvs.getContext("2d").putImageData(im, 0, 0);
-    cvs.toBlob(b => res(b ? URL.createObjectURL(b) : null), "image/png");
+    cvs.toBlob(b => res(b || null), "image/png");
   });
 }
 // write one page to IndexedDB (key = pageNo for 1-7, else "u:<savedAt>"); raw ROI
@@ -1292,10 +1295,13 @@ function makeThumb(scan) {
 function persistEntry(entry) {
   if (!dbAvailable || !entry || !entry.scan || !entry.scan.roi) return;
   const sc = entry.scan;
-  putPage(entry.dbKey, {
+  const rec = {
     v: SCHEMA, savedAt: entry.savedAt || Date.now(), pageNo: entry.pageNo ?? null,
     roiW: sc.roi.w, roiH: sc.roi.h, roi: sc.roi.data, cells: sc.cells,
-  }).catch(e => console.warn("warehouse save failed", e));
+  };
+  if (entry.thumbBlob) rec.thumb = entry.thumbBlob;   // cached PNG -> fast restore (no makeThumb)
+  putPage(entry.dbKey, rec).catch(e => console.warn("warehouse save failed", e));
+  try { localStorage.setItem("tbh_has_warehouse", "1"); } catch (e) {}   // skip the hero next time
 }
 // re-save the active page after in-place edits (assign/ignore), debounced.
 let _persistTimer = null;
@@ -1307,21 +1313,29 @@ function schedulePersistActive() {
   clearTimeout(_persistTimer);
   _persistTimer = setTimeout(() => persistEntry(entry), 800);
 }
-// rebuild STOCKS from IndexedDB on startup (objectURLs are recreated from pixels).
+// rebuild STOCKS from IndexedDB on startup. Uses the CACHED thumbnail Blob when
+// present (cheap) — only old saves without one pay makeThumb (and get re-cached).
 async function restoreWarehouse() {
   if (!dbAvailable) return;
   let pages;
   try { pages = await loadPages(); } catch (e) { console.warn("warehouse restore failed", e); return; }
   if (!pages || !pages.length) return;
+  let added = false;
   for (const { key, rec } of pages) {
     if (!rec || rec.v !== SCHEMA || !rec.roi) continue;
+    if (STOCKS.some(s => s.dbKey === key)) continue;   // user scanned this page during the defer window
     const data = rec.roi instanceof Uint8Array ? rec.roi : new Uint8Array(rec.roi);
     const scan = { roi: { w: rec.roiW, h: rec.roiH, data }, imgW: rec.roiW, imgH: rec.roiH,
                    cells: rec.cells || [], srcImg: null, pageGuess: rec.pageNo ?? null, restored: true };
-    const url = await makeThumb(scan);
-    STOCKS.push({ scan, url, pageNo: rec.pageNo ?? null, dbKey: key, savedAt: rec.savedAt || 0 });
+    let thumbBlob = rec.thumb || null;
+    if (!thumbBlob) thumbBlob = await makeThumb(scan);  // old save: regenerate once
+    const entry = { scan, url: thumbBlob ? URL.createObjectURL(thumbBlob) : null,
+                    pageNo: rec.pageNo ?? null, dbKey: key, savedAt: rec.savedAt || 0, thumbBlob };
+    STOCKS.push(entry);
+    added = true;
+    if (!rec.thumb && thumbBlob) persistEntry(entry);   // back-fill the cache so next start is fast
   }
-  if (STOCKS.length) { sortStocks(); TABLE_SRC = "stock"; renderAll(); }
+  if (added) { sortStocks(); TABLE_SRC = "stock"; renderAll(); }
 }
 // page picker (1-7 + "?") for the CURRENT scan; pre-filled with the auto guess.
 function renderPageSel() {
@@ -1415,6 +1429,7 @@ function saveActive(pageNo) {
       target = { scan: SCAN, url, pageNo, savedAt, dbKey: pageNo != null ? pageNo : ("u:" + savedAt) };
       STOCKS.push(target);
     }
+    target.thumbBlob = b;        // cache the PNG thumb so restore skips makeThumb
     CURPAGE = pageNo;
     sortStocks();
     TABLE_SRC = "stock";
@@ -1449,7 +1464,7 @@ function removeStock(i) {
   if (st.url) URL.revokeObjectURL(st.url);
   if (st.dbKey != null) deletePage(st.dbKey).catch(e => console.warn("warehouse delete failed", e));
   STOCKS.splice(i, 1);            // order already sorted; labels recomputed on render
-  if (!STOCKS.length) TABLE_SRC = "scan";
+  if (!STOCKS.length) { TABLE_SRC = "scan"; try { localStorage.removeItem("tbh_has_warehouse"); } catch (e) {} }
   renderAll();
 }
 $("stockBtn").addEventListener("click", () => saveActive(CURPAGE));
@@ -1464,6 +1479,7 @@ $("stockClear").addEventListener("click", e => {
   STOCKS.forEach(st => { if (st.url) URL.revokeObjectURL(st.url); });
   STOCKS = []; TABLE_SRC = "scan";
   if (dbAvailable) clearPages().catch(e => console.warn("warehouse clear failed", e));
+  try { localStorage.removeItem("tbh_has_warehouse"); } catch (e) {}   // hero shows again
   renderAll();
 });
 $("stockStrip").addEventListener("click", e => {
@@ -1525,7 +1541,9 @@ function fmtSellH(h) {
   if (h <= 1) return t("plan_fast");
   return "~" + Math.ceil(h) + "h";
 }
-function renderPlan() {
+// cheap part of the plan panel: keep the panel present + the jump-button glow
+// current on every renderAll, WITHOUT recomputing the (heavier) plan body.
+function renderPlanChrome() {
   const el = $("plan"); if (!el) return;
   el.style.display = "block";
   $("planTitle").textContent = t("plan_title");
@@ -1533,6 +1551,15 @@ function renderPlan() {
   // after a scan or with pooled stock — stays dormant during the freeze, auto-lights at reopening.
   const planLive = !!DATA.prices?.unlocked || location.hash === "#planpreview" || location.hash === "#demoscan";
   $("planJump").classList.toggle("ctap", planLive && !!(SCAN || STOCKS.length));
+}
+// the full plan body is computed lazily (only when the panel is on-screen or the
+// user jumps to it) via the _planDirty flag, so off-screen edits don't recompute it.
+let _planDirty = true, _planVisible = false;
+function refreshPlanIfNeeded() { if (_planDirty && _planVisible) renderPlan(); }
+function renderPlan() {
+  const el = $("plan"); if (!el) return;
+  _planDirty = false;
+  renderPlanChrome();
   // pre-reopen teaser (unless forced via #planpreview / the demo) so the feature
   // advertises itself. Includes a static EXAMPLE table — the real planner needs
   // live prices+volume which don't exist during the freeze, and #demoscan can't
@@ -1616,7 +1643,8 @@ function renderPlan() {
 function renderAll() {
   // total + results table only make sense after a scan (or pooled stock pages)
   const rc = $("results"); if (rc) rc.style.display = (SCAN || STOCKS.length) ? "" : "none";
-  renderTable(); renderGacha(); renderPlan(); updateStockUI(); renderStock();
+  renderTable(); renderGacha(); updateStockUI(); renderStock();
+  renderPlanChrome(); _planDirty = true; refreshPlanIfNeeded();   // body only if on-screen
 }
 
 // ---------------- boot ----------------
@@ -1627,11 +1655,26 @@ setStatus("…");
 // case onload never fires — check .complete as well.
 {
   const hi = $("heroImg");
-  const show = () => { if (!SCAN) $("hero").style.display = "block"; };
+  // skip the tutorial hero for returning users who already have a saved My
+  // Warehouse — a synchronous localStorage flag decides instantly (no IndexedDB
+  // read, no flicker even though the restore is deferred).
+  const show = () => {
+    if (!SCAN && !localStorage.getItem("tbh_has_warehouse")) $("hero").style.display = "block";
+  };
   hi.onload = show;
   hi.onerror = () => { $("hero").style.display = "none"; };
   if (hi.complete && hi.naturalWidth > 0) show();
 }
+// recompute the (gated) plan body when its panel scrolls into view. Without
+// IntersectionObserver support, treat the plan as always visible so behaviour is
+// unchanged (renderPlan runs on every renderAll).
+try {
+  const obs = new IntersectionObserver(es => {
+    _planVisible = es.some(e => e.isIntersecting);
+    refreshPlanIfNeeded();
+  }, { rootMargin: "300px" });
+  obs.observe($("plan"));
+} catch (e) { _planVisible = true; }
 // debug hook: lets a test harness drive a scan with a raw BGR image
 window.__runScan = img => runScan(img);
 // #demoscan: auto-scan the bundled test capture (dev/self-verification only;
@@ -1643,5 +1686,12 @@ async function demoScan() {
     await runScan({ w: m.w, h: m.h, data: buf });
   } catch (e) { console.warn("demoscan unavailable", e); }
 }
-loadData().then(() => { injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); applyConnState(); restoreWarehouse(); if (location.hash === "#demoscan") demoScan(); })
+loadData().then(() => {
+  injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); applyConnState();
+  // restore My Warehouse AFTER the initial UI paints — reading IndexedDB (and
+  // makeThumb on old saves) shouldn't block first render. Idle if available.
+  const idle = window.requestIdleCallback || (cb => setTimeout(cb, 150));
+  idle(() => restoreWarehouse());
+  if (location.hash === "#demoscan") demoScan();
+})
   .catch(e => setStatus("data load error: " + e));
