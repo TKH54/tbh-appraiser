@@ -238,10 +238,26 @@
   /* grade unknown -> suggest "not tradeable / ignore" in the popover */
   #popIgnore.suggest { background:#4a3a00; color:#ffd166; border:1px solid #9e7d00;
                        animation:qpulse 1.4s ease-in-out infinite; }
+  /* ㉔ warehouse page picker (1-7 + ?) */
+  #pageSel { display:flex; align-items:center; flex-wrap:wrap; gap:.25rem; max-width:100%; }
+  #pageSel .pglabel { font-size:.72rem; color:#8b93a7; margin-right:.15rem; }
+  /* hint on its own full-width line so the (long) text wraps INSIDE the column
+     instead of widening it and shoving the results column */
+  #pageSel .pghint { flex-basis:100%; margin:.15rem 0 0; font-size:.68rem; color:#e0a200;
+                     line-height:1.3; overflow-wrap:anywhere; }
+  .pgb { min-width:1.9rem; padding:.25rem .35rem; font-size:.78rem; line-height:1;
+         background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:.3rem; cursor:pointer; }
+  .pgb:hover { border-color:#6fb1ff; }
+  .pgb.has { border-color:#3b7a3b; }                 /* a page already stocked */
+  .pgb.has::after { content:"●"; font-size:.5rem; color:#56a356; margin-left:.15rem; vertical-align:middle; }
+  .pgb.sel { background:#e0a200; color:#1a1a1a; border-color:#e0a200; font-weight:700; }  /* current pick */
   /* ㉔ stocked warehouse snapshots */
-  #stockStrip { display:grid; grid-template-columns:repeat(4, max-content); gap:.4rem; margin-top:.4rem; }
+  /* fixed-size thumbnails (auto-fill wraps on narrow screens). object-fit:cover
+     keeps a uniform grid so a wide single-row / tall single-column capture can't
+     blow the thumbnail (and thus the capture column) out and shove the results. */
+  #stockStrip { display:grid; grid-template-columns:repeat(auto-fill, 104px); gap:.4rem; margin-top:.4rem; }
   .stockcard { position:relative; }
-  .stockcard img { height:74px; display:block; cursor:pointer; border:1px solid #30363d; border-radius:.3rem; }
+  .stockcard img { width:104px; height:74px; object-fit:cover; display:block; cursor:pointer; border:1px solid #30363d; border-radius:.3rem; background:#000; }
   .stockcard:hover img { border-color:#6fb1ff; }
   .stockcard.active img { border:2px solid #ffd60a; box-shadow:0 0 .4rem rgba(255,214,10,.6); }
   .stockcard .cap { position:absolute; left:.15rem; top:.15rem; background:rgba(0,0,0,.65);
@@ -370,7 +386,7 @@
 
   <!-- demo hero: shows what a finished appraisal looks like (hidden once you scan) -->
   <div id="hero" style="display:none; margin:.8rem 0;">
-    <img id="heroImg" src="assets/demo.png?v20260616zaq" alt="demo"
+    <img id="heroImg" src="assets/demo.png?v20260626e" alt="demo"
          style="max-width:min(100%, 60rem); border-radius:.8rem; border:3px solid #7048e8;
                 box-shadow:0 0 .8rem rgba(112,72,232,.45), 0 .4rem 1.5rem rgba(0,0,0,.45);">
     <div class="foot" id="heroCap" style="margin-top:.3rem;"></div>
@@ -386,6 +402,7 @@
       <!-- ㉔ warehouse stock: OUTSIDE #scanWrap so the thumbnails are never
            clipped by the warehouse image's max-height scroll area -->
       <div id="stockBar" style="display:none; margin-top:.5rem;">
+        <div id="pageSel" style="margin-bottom:.45rem;"></div>
         <button class="ghost" id="stockBtn"></button>
         <span id="stockInfo" class="foot" style="margin-left:.4rem;"></span>
         <a href="#" id="stockClear" class="foot" style="margin-left:.4rem;"></a>
@@ -479,7 +496,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260616zar"></script>
+<script type="module" src="js/app.js?v20260626e"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"

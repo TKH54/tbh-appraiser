@@ -1,9 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260616zaq";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260616zaq";
-import { T, LANGS, pickLang } from "./i18n.js?v20260616zaq";
+import { Matcher, _internal } from "./recognize.js?v20260626e";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626e";
+import { detectPageTab } from "./detect.js?v20260626e";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626e";
+import { T, LANGS, pickLang } from "./i18n.js?v20260626e";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -13,8 +15,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.6.27";
+const APP_VERSION = "1.7.0";
 const CHANGELOG = [
+  { v: "1.7.0", d: "2026/6/26",
+    ja: "複数ページを「マイ倉庫」として自動保存。ブラウザを再起動しても復元されます（端末内のみ・外部送信なし）。ページ番号は自動検出し、数字タブで切り替えできます。",
+    en: "Multi-page “My Warehouse”: pages auto-save and are restored even after a browser restart (on-device only, never uploaded). Page numbers are auto-detected; switch pages with the number tabs." },
   { v: "1.6.27", d: "2026/6/26",
     ja: "価格表示の不具合を修正：再開後に暴落した銘柄（オパール等）で、まだ更新されていない古い中央値がそのまま高値で表示され続ける問題を解消しました。深い板の現在最安値が中央値より大幅に下なら実勢を反映します。",
     en: "Fixed a price-display bug: items that crashed after reopening (e.g. Opal) could keep showing a stale, not-yet-updated high median. When a deep live market sits far below that median, the tool now reflects the live price." },
@@ -97,9 +102,12 @@ let STREAM = null, VIDEO = null;
 let SCAN = null;        // {imgW,imgH, cells:[{...item, assigned, ignored}]}
 let SORT = JSON.parse(localStorage.getItem("tbh_sort") || '{"k":"total","d":-1}');
 let POP_I = -1;
-let STOCKS = [];           // ㉔ stocked pages [{scan,url,label}] — scan is the FULL
-                           // mutable scan so a click reloads it as the editable image
+let STOCKS = [];           // ㉔ stocked pages [{scan,url,pageNo}] — scan is the FULL
+                           // mutable scan so a click reloads it as the editable image;
+                           // pageNo is the warehouse tab 1-7 (null if unknown)
 let TABLE_SRC = "scan";    // item table source: "scan" (current) | "stock" (all pages)
+let CURPAGE = null;        // page (1-7|null) chosen for the CURRENT scan — drives the
+                           // page selector + whether stocking adds or overwrites
 
 const t = k => (T[LANG] && T[LANG][k] !== undefined) ? T[LANG][k] : T.en[k];
 const tu = k => t(UNLOCKED ? k + "_post" : k);   // post-sell-unlock variant of a label/banner
@@ -519,6 +527,15 @@ async function runScan(img) {
     roiImg: null,
   }));
   SCAN = { roi: res.roi, imgW: res.roi.w, imgH: res.roi.h, cells, srcImg: img };
+  // best-effort warehouse page (1-7) from the gold tab.
+  let guess = null;
+  try {
+    const pg = detectPageTab(res.roi, res.items, res.panel.scale, res.panel.title_y);
+    console.log("[pageTab] scores", pg.scores, "-> guess", pg.pageNo, "confident", pg.confident);
+    guess = pg.pageNo;
+  } catch (e) { console.warn("pageTab detect failed", e); }
+  SCAN.pageGuess = guess;
+  CURPAGE = guess;
   $("hero").style.display = "none";        // demo gives way to the real thing
   $("guide").removeAttribute("open");      // collapse the tutorial (still re-openable)
   drawScan();
@@ -526,6 +543,11 @@ async function runScan(img) {
   const auto = cells.filter(c => c.assigned).length;
   const review = cells.filter(c => !c.assigned && !c.ignored).length;
   setStatus(t("found")(cells.length, auto, review));
+  // ㉕ auto-save to My Warehouse when the page tab was read confidently — a
+  // re-scan of page N then transparently updates the saved page N. If the page
+  // is uncertain, leave it for the user to pick (the picker is shown); they can
+  // correct a wrong guess with one click, or hit "?" to drop it.
+  if (guess != null) saveActive(guess);
 }
 
 // diagnostic view: show the captured frame (downscaled) + detected panel area
@@ -951,6 +973,7 @@ function assign(hash) {
     if (n >= 60 && sum / (n * 3) <= 0.05) o.assigned = hash;
   }
   closePop(); drawOverlays(); renderTable();
+  schedulePersistActive();   // if this scan is a saved page, persist the edit
 }
 
 $("pop").addEventListener("click", e => {
@@ -969,6 +992,7 @@ $("popIgnore").addEventListener("click", () => {
   all.push({ base: "__skip__", rarity: c.border, ...packSig(sig) });
   try { localStorage.setItem("tbh_learned", JSON.stringify(all)); } catch (e) {}
   closePop(); drawOverlays(); renderTable();
+  schedulePersistActive();   // persist the edit if this scan is a saved page
 });
 // the correction popup is draggable (grab anywhere except controls)
 {
@@ -1233,16 +1257,105 @@ document.addEventListener("paste", async e => {
 });
 
 // ---------------- ㉔ warehouse snapshot stock ----------------
-function isStocked(scan) { return STOCKS.some(st => st.scan === scan); }
+const pageLabel = n => t("stock_page").replace("{n}", n);
+// display order: by page 1-7, then unknown-page pages last in add order (stable).
+function sortStocks() { STOCKS.sort((a, b) => (a.pageNo ?? 99) - (b.pageNo ?? 99)); }
+
+// ---- ㉕ "My Warehouse": persist STOCKS in IndexedDB across browser restarts ----
+const SCHEMA = 1;
+// build a cropped thumbnail objectURL straight from a scan's ROI pixels (same
+// crop as drawScan) — works for restored pages whose canvas isn't drawn.
+function makeThumb(scan) {
+  return new Promise(res => {
+    const r = scan.roi, cs = scan.cells;
+    if (!r || !cs || !cs.length) { res(null); return; }
+    const pad = 8;
+    const x0 = Math.max(0, Math.min(...cs.map(c => c.x)) - pad);
+    const y0 = Math.max(0, Math.min(...cs.map(c => c.y)) - pad);
+    const x1 = Math.min(scan.imgW, Math.max(...cs.map(c => c.x + c.w)) + pad);
+    const y1 = Math.min(scan.imgH, Math.max(...cs.map(c => c.y + c.h)) + pad);
+    const w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) { res(null); return; }
+    const cvs = document.createElement("canvas"); cvs.width = w; cvs.height = h;
+    const im = new ImageData(w, h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const s = ((y + y0) * r.w + x + x0) * 3, d = (y * w + x) * 4;
+      im.data[d] = r.data[s + 2]; im.data[d + 1] = r.data[s + 1];
+      im.data[d + 2] = r.data[s]; im.data[d + 3] = 255;
+    }
+    cvs.getContext("2d").putImageData(im, 0, 0);
+    cvs.toBlob(b => res(b ? URL.createObjectURL(b) : null), "image/png");
+  });
+}
+// write one page to IndexedDB (key = pageNo for 1-7, else "u:<savedAt>"); raw ROI
+// pixels + cells so a restored page is fully re-drawable. Local-only, no upload.
+function persistEntry(entry) {
+  if (!dbAvailable || !entry || !entry.scan || !entry.scan.roi) return;
+  const sc = entry.scan;
+  putPage(entry.dbKey, {
+    v: SCHEMA, savedAt: entry.savedAt || Date.now(), pageNo: entry.pageNo ?? null,
+    roiW: sc.roi.w, roiH: sc.roi.h, roi: sc.roi.data, cells: sc.cells,
+  }).catch(e => console.warn("warehouse save failed", e));
+}
+// re-save the active page after in-place edits (assign/ignore), debounced.
+let _persistTimer = null;
+function schedulePersistActive() {
+  if (!dbAvailable || !SCAN) return;
+  const entry = STOCKS.find(st => st.scan === SCAN);
+  if (!entry) return;
+  entry.savedAt = Date.now();
+  clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => persistEntry(entry), 800);
+}
+// rebuild STOCKS from IndexedDB on startup (objectURLs are recreated from pixels).
+async function restoreWarehouse() {
+  if (!dbAvailable) return;
+  let pages;
+  try { pages = await loadPages(); } catch (e) { console.warn("warehouse restore failed", e); return; }
+  if (!pages || !pages.length) return;
+  for (const { key, rec } of pages) {
+    if (!rec || rec.v !== SCHEMA || !rec.roi) continue;
+    const data = rec.roi instanceof Uint8Array ? rec.roi : new Uint8Array(rec.roi);
+    const scan = { roi: { w: rec.roiW, h: rec.roiH, data }, imgW: rec.roiW, imgH: rec.roiH,
+                   cells: rec.cells || [], srcImg: null, pageGuess: rec.pageNo ?? null, restored: true };
+    const url = await makeThumb(scan);
+    STOCKS.push({ scan, url, pageNo: rec.pageNo ?? null, dbKey: key, savedAt: rec.savedAt || 0 });
+  }
+  if (STOCKS.length) { sortStocks(); TABLE_SRC = "stock"; renderAll(); }
+}
+// page picker (1-7 + "?") for the CURRENT scan; pre-filled with the auto guess.
+function renderPageSel() {
+  const el = $("pageSel");
+  if (!el) return;
+  // tab bar of the SAVED pages — click a number to switch to (view/edit) that
+  // page, like the in-game warehouse tabs. The page currently shown is lit.
+  if (!STOCKS.length) { el.innerHTML = ""; return; }
+  let legacy = 0;
+  let html = `<span class="pglabel">${esc(t("page_label"))}</span>`;
+  STOCKS.forEach((st, i) => {
+    const label = st.pageNo != null ? st.pageNo : ("#" + (++legacy));
+    const active = st.scan === SCAN;
+    html += `<button type="button" class="pgb${active ? " sel" : ""}" data-i="${i}">${esc(String(label))}</button>`;
+  });
+  el.innerHTML = html;
+}
 function updateStockUI() {
   $("stockBar").style.display = (SCAN || STOCKS.length) ? "" : "none";
+  renderPageSel();
   const btn = $("stockBtn");
-  const stocked = SCAN && isStocked(SCAN);
-  btn.disabled = !SCAN || stocked;
-  btn.textContent = stocked ? t("stock_added") : t("stock_btn");
+  const exact = SCAN ? STOCKS.find(st => st.scan === SCAN) : null;            // this scan already saved?
+  let label = t("stock_btn"), disabled = !SCAN, cta = false;
+  if (exact) {                                  // already in My Warehouse -> just a status
+    label = exact.pageNo != null ? t("stock_added_page").replace("{n}", exact.pageNo) : t("stock_added");
+    disabled = true;
+  } else if (SCAN) {                            // unsaved (page unknown) -> manual save
+    label = t("stock_btn"); cta = true;
+  }
+  btn.disabled = disabled;
+  btn.textContent = label;
   // pulse after a scan (not yet stocked) so multi-page users notice they can
   // stock this page — same yellow CTA glow as the connect/appraise buttons
-  btn.classList.toggle("cta", !!SCAN && !stocked);
+  btn.classList.toggle("cta", !!SCAN && cta);
   // keep the appraise button glowing the whole time the screen is shared (it's
   // the main repeatable action) — never let the next-step nudge vanish from it
   $("scanBtn").classList.toggle("cta", !!STREAM);
@@ -1264,14 +1377,50 @@ function updateStockUI() {
     [[1, "100"], [2, "500"], [3, "1k"], [4, "2k"], [5, "3k"], [6, "5k"], [7, "10k"]]
       .map(([b, lb]) => `<span class="p${b}" style="margin-right:.4rem;">¥${lb}+</span>`).join("");
 }
-function addStock() {
-  if (!SCAN || isStocked(SCAN)) return;
+// Save the current scan into My Warehouse at slot `pageNo` (1-7, or null=unknown).
+// One scan = one entry; this stocks it, MOVES it if the scan was already at
+// another page, and OVERWRITES whatever page `pageNo` held (freeing its image).
+// Called automatically after a scan (confident page), on a page-picker click, and
+// by the stock button. Pooled appraisal + listing plan recompute via renderAll().
+function saveActive(pageNo) {
+  if (!SCAN) return;
+  const cur = STOCKS.find(st => st.scan === SCAN);          // this scan already stocked?
+  const slot = pageNo != null ? STOCKS.find(st => st.pageNo === pageNo) : null;
+  if (cur && cur === slot) {                                // already at this page -> re-save edits
+    CURPAGE = pageNo; persistEntry(cur); updateStockUI(); return;
+  }
   const cv = $("scanCanvas");
   cv.toBlob(b => {
     if (!b) return;
-    STOCKS.push({ scan: SCAN, url: URL.createObjectURL(b), label: "#" + (STOCKS.length + 1) });
-    TABLE_SRC = "stock";          // adding a page = you want the combined list
-    renderStock(); renderAll();
+    const url = URL.createObjectURL(b);
+    const savedAt = Date.now();
+    let target;
+    if (slot && slot !== cur) {                             // overwrite the target page slot
+      if (slot.url) URL.revokeObjectURL(slot.url);
+      slot.scan = SCAN; slot.url = url; slot.savedAt = savedAt; slot.pageNo = pageNo; slot.dbKey = pageNo;
+      target = slot;
+      if (cur) {                                            // this scan was elsewhere -> vacate it
+        if (cur.url) URL.revokeObjectURL(cur.url);
+        if (cur.dbKey != null && cur.dbKey !== pageNo) deletePage(cur.dbKey).catch(() => {});
+        STOCKS.splice(STOCKS.indexOf(cur), 1);
+      }
+    } else if (cur) {                                       // re-key this scan to a new page
+      if (cur.url) URL.revokeObjectURL(cur.url);
+      const oldKey = cur.dbKey;
+      cur.url = url; cur.savedAt = savedAt; cur.pageNo = pageNo;
+      cur.dbKey = pageNo != null ? pageNo : (oldKey ?? ("u:" + savedAt));
+      if (oldKey != null && oldKey !== cur.dbKey) deletePage(oldKey).catch(() => {});
+      target = cur;
+    } else {                                                // fresh entry
+      target = { scan: SCAN, url, pageNo, savedAt, dbKey: pageNo != null ? pageNo : ("u:" + savedAt) };
+      STOCKS.push(target);
+    }
+    CURPAGE = pageNo;
+    sortStocks();
+    TABLE_SRC = "stock";
+    renderAll();
+    persistEntry(target);
+    if (pageNo != null) setStatus(t("stock_saved").replace("{n}", pageNo));
   }, "image/png");
 }
 // click a stocked thumbnail -> reload it as the MAIN editable warehouse image
@@ -1279,32 +1428,43 @@ function loadStock(i) {
   const st = STOCKS[i];
   if (!st) return;
   SCAN = st.scan;                 // same mutable object -> edits update this page
+  CURPAGE = st.pageNo ?? null;    // selector follows the page you're editing
   TABLE_SRC = "scan";             // show just this page while you edit it
   drawScan(); renderAll();
   $("scanWrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function renderStock() {
-  $("stockStrip").innerHTML = STOCKS.map((st, i) =>
-    `<div class="stockcard${st.scan === SCAN ? " active" : ""}" data-i="${i}" title="${esc(t("stock_edit_tip"))}">
-       <span class="cap">${esc(st.label)}</span>
+  let legacy = 0;
+  $("stockStrip").innerHTML = STOCKS.map((st, i) => {
+    const cap = st.pageNo != null ? pageLabel(st.pageNo) : "#" + (++legacy);
+    return `<div class="stockcard${st.scan === SCAN ? " active" : ""}" data-i="${i}" title="${esc(t("stock_edit_tip"))}">
+       <span class="cap">${esc(cap)}</span>
        <span class="del" data-del="${i}" title="${esc(t("stock_del_tip"))}">×</span>
-       <img src="${st.url}" alt=""></div>`).join("");
+       <img src="${st.url}" alt=""></div>`;
+  }).join("");
 }
 function removeStock(i) {
   const st = STOCKS[i];
   if (!st) return;
-  URL.revokeObjectURL(st.url);
-  STOCKS.splice(i, 1);
-  STOCKS.forEach((s, k) => { s.label = "#" + (k + 1); });   // renumber
+  if (st.url) URL.revokeObjectURL(st.url);
+  if (st.dbKey != null) deletePage(st.dbKey).catch(e => console.warn("warehouse delete failed", e));
+  STOCKS.splice(i, 1);            // order already sorted; labels recomputed on render
   if (!STOCKS.length) TABLE_SRC = "scan";
-  renderStock(); renderAll();
+  renderAll();
 }
-$("stockBtn").addEventListener("click", addStock);
+$("stockBtn").addEventListener("click", () => saveActive(CURPAGE));
+$("pageSel").addEventListener("click", e => {
+  const b = e.target.closest(".pgb");
+  if (!b) return;
+  loadStock(+b.dataset.i);                       // tab = switch to that saved page
+});
 $("stockClear").addEventListener("click", e => {
   e.preventDefault();
-  STOCKS.forEach(st => URL.revokeObjectURL(st.url));
+  if (!confirm(t("stock_clear_confirm"))) return;     // wipes the saved My Warehouse
+  STOCKS.forEach(st => { if (st.url) URL.revokeObjectURL(st.url); });
   STOCKS = []; TABLE_SRC = "scan";
-  renderStock(); renderAll();
+  if (dbAvailable) clearPages().catch(e => console.warn("warehouse clear failed", e));
+  renderAll();
 });
 $("stockStrip").addEventListener("click", e => {
   const del = e.target.closest("[data-del]");
@@ -1483,5 +1643,5 @@ async function demoScan() {
     await runScan({ w: m.w, h: m.h, data: buf });
   } catch (e) { console.warn("demoscan unavailable", e); }
 }
-loadData().then(() => { injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); applyConnState(); if (location.hash === "#demoscan") demoScan(); })
+loadData().then(() => { injectLearnedRefs(); applyLang(); setStatus(t("not_connected")); applyConnState(); restoreWarehouse(); if (location.hash === "#demoscan") demoScan(); })
   .catch(e => setStatus("data load error: " + e));

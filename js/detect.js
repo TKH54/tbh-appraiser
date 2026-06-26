@@ -6,7 +6,7 @@
 // grayscale pyramid first and refine the best candidate at full resolution
 // (same result as cv2 on the reference screenshot, see test_detect.js).
 
-import { _internal } from "./recognize.js?v20260616zaq";
+import { _internal } from "./recognize.js?v20260626e";
 const { bgr2hsv } = _internal;
 
 // ---------- gray helpers ----------
@@ -539,4 +539,47 @@ export function readWarehouse(img, tplImg) {
   }
   panel.x0 = x0; panel.x1 = x1;
   return { panel, roi, cells };
+}
+
+// ---------- warehouse PAGE tab (1-7) detection — best effort ----------
+// The warehouse has 7 page tabs in a row just above the grid; the SELECTED tab
+// is lit gold/amber while the rest are dim. detectGrid puts the grid top at
+// titleY + 78*scale, so the tab row lives in the band just above that. We split
+// the grid's x-span into 7 slots and score each by "goldness" (R,G high & B low,
+// weighted by brightness); the brightest slot — if clearly ahead — is the page.
+// Returns {pageNo:1-7|null, scores:[7], top, confident}. pageNo is null unless
+// confident, so the UI only ever PRE-SELECTS a guess the user then confirms
+// (never a silent wrong overwrite). `scores` is logged for field calibration.
+export function detectPageTab(roi, cells, scale = 1, titleY = 0) {
+  if (!roi || !cells || !cells.length) return { pageNo: null, scores: [], confident: false };
+  const gridTop = titleY + Math.round(78 * scale);   // = tab-row bottom
+  const tabH = Math.max(8, Math.round(40 * scale));
+  const bandTop = Math.max(0, gridTop - tabH);
+  const bandBot = Math.max(bandTop + 1, Math.min(roi.h, gridTop - Math.round(4 * scale)));
+  const gx0 = Math.min(...cells.map(c => c.x));
+  const gx1 = Math.max(...cells.map(c => c.x + c.w));
+  const span = gx1 - gx0;
+  const { w: W, data } = roi;
+  if (span < 14 || bandBot <= bandTop) return { pageNo: null, scores: [], confident: false };
+  const scores = [];
+  for (let i = 0; i < 7; i++) {
+    const sx0 = gx0 + Math.round(span * i / 7), sx1 = gx0 + Math.round(span * (i + 1) / 7);
+    const mx0 = Math.round(sx0 + (sx1 - sx0) * 0.2), mx1 = Math.round(sx1 - (sx1 - sx0) * 0.2);
+    let gold = 0, n = 0;
+    for (let y = bandTop; y < bandBot; y++) {
+      const yb = y * W;
+      for (let x = mx0; x < mx1; x++) {
+        const p = (yb + x) * 3, B = data[p], G = data[p + 1], R = data[p + 2];
+        const v = Math.max(R, G, B);
+        gold += Math.max(0, Math.min(R, G) - B) * (v / 255);   // amber, brightness-weighted
+        n++;
+      }
+    }
+    scores.push(n ? +(gold / n).toFixed(1) : 0);
+  }
+  let bi = 0;
+  for (let i = 1; i < 7; i++) if (scores[i] > scores[bi]) bi = i;
+  const sorted = [...scores].sort((a, b) => b - a);
+  const confident = sorted[0] >= 10 && sorted[0] >= sorted[1] * 1.5;
+  return { pageNo: confident ? bi + 1 : null, scores, top: bi + 1, confident };
 }
