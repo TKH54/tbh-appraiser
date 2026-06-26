@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626g";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626g";
-import { detectPageTab } from "./detect.js?v20260626g";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626g";
-import { T, LANGS, pickLang } from "./i18n.js?v20260626g";
+import { Matcher, _internal } from "./recognize.js?v20260626h";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626h";
+import { detectPageTab } from "./detect.js?v20260626h";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626h";
+import { T, LANGS, pickLang } from "./i18n.js?v20260626h";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -109,6 +109,9 @@ let STOCKS = [];           // ㉔ stocked pages [{scan,url,pageNo}] — scan is 
                            // mutable scan so a click reloads it as the editable image;
                            // pageNo is the warehouse tab 1-7 (null if unknown)
 let TABLE_SRC = "scan";    // item table source: "scan" (current) | "stock" (all pages)
+let VIEW = "appraisal";    // right column: "appraisal" (total + item table + coins)
+                           // | "plan" (listing plan), toggled by the 出品プラン button
+                           // so a big 7-page warehouse needn't be scrolled past
 let CURPAGE = null;        // page (1-7|null) chosen for the CURRENT scan — drives the
                            // page selector + whether stocking adds or overwrites
 
@@ -1149,7 +1152,7 @@ function applyLang() {
   $("fbText").placeholder = t("fb_placeholder");
   $("legend").innerHTML = `<span class="hint">${withQ("review_hint")}</span>`;
   $("heroCap").textContent = t("hero_cap");
-  if (DATA) { applyMode(); renderTable(); renderGacha(); renderPlan(); }
+  if (DATA) { applyMode(); renderTable(); renderGacha(); renderPlan(); applyView(); }
 }
 const sel = $("langSel");
 for (const [code, label] of LANGS) {
@@ -1232,11 +1235,8 @@ function hlCells(hash, on) {
 });
 
 $("capBtn").addEventListener("click", connect);
-$("planJump").addEventListener("click", () => {
-  renderPlan();                                  // ensure it's up to date, then jump
-  $("plan").scrollIntoView({ behavior: "smooth", block: "start" });
-});
-$("planTop").addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+$("planJump").addEventListener("click", () => setView(VIEW === "plan" ? "appraisal" : "plan"));
+$("planTop").addEventListener("click", () => setView("appraisal"));   // "back to appraisal"
 $("scanBtn").addEventListener("click", async () => {
   if (!VIDEO) return;
   try {
@@ -1445,6 +1445,7 @@ function loadStock(i) {
   SCAN = st.scan;                 // same mutable object -> edits update this page
   CURPAGE = st.pageNo ?? null;    // selector follows the page you're editing
   TABLE_SRC = "scan";             // show just this page while you edit it
+  VIEW = "appraisal";             // opening a page to view/edit -> show its items
   drawScan(); renderAll();
   $("scanWrap").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -1645,6 +1646,26 @@ function renderAll() {
   const rc = $("results"); if (rc) rc.style.display = (SCAN || STOCKS.length) ? "" : "none";
   renderTable(); renderGacha(); updateStockUI(); renderStock();
   renderPlanChrome(); _planDirty = true; refreshPlanIfNeeded();   // body only if on-screen
+  applyView();                                                    // show appraisal OR plan
+}
+// the 出品プラン button switches the right column between the appraisal (total +
+// item table + coins) and the listing plan, instead of stacking them — a 7-page
+// warehouse no longer needs a long scroll. The button doubles as "back".
+function applyView() {
+  const planView = VIEW === "plan";
+  // single authority on the right-column visibility so toggling either way fully
+  // restores the other view (results+coins for appraisal, the plan for plan).
+  $("plan").style.display = planView ? "block" : "none";
+  $("results").style.display = (!planView && (SCAN || STOCKS.length)) ? "" : "none";
+  $("gacha").style.display = (!planView && DATA && DATA.gacha) ? "block" : "none";
+  const btn = $("planJump");
+  if (btn) btn.textContent = planView ? t("to_appraisal") : t("plan_btn");
+}
+function setView(v) {
+  VIEW = v;
+  if (v === "plan") renderPlan();                 // force a fresh body before showing
+  applyView();
+  $("resCol")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // ---------------- boot ----------------
