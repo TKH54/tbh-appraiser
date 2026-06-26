@@ -215,6 +215,37 @@ def classify(claimed, resolved):
     return "correct" if resolved == claimed else "mis"   # mis = confident WRONG id
 
 
+def load_values(items):
+    """base -> representative DISPLAY value in JPY (median over its graded variants
+    from prices.json: m=real median, else lm=last median, else p=lowest ask). Used
+    to weight a misID by money: a cheap item shown as an expensive one (over-
+    valuation) is the worst per the no-false-positive policy."""
+    import statistics
+    from collections import defaultdict
+    try:
+        pr = json.loads((DATA / "prices.json").read_text(encoding="utf-8")).get("items", {})
+    except Exception:
+        return {}
+    by = defaultdict(list)
+    for h, pv in pr.items():
+        b = items.get(h, {}).get("base")
+        dv = pv.get("m") or pv.get("lm") or pv.get("p")
+        if b and dv:
+            by[b].append(float(dv))
+    return {b: statistics.median(vs) for b, vs in by.items()}
+
+
+# a new MIS is "high-value over-valuation" (the worst) when the wrongly-shown item
+# is expensive AND much pricier than the true item — i.e. it inflates the appraisal.
+HIGH_YEN = 500.0
+OVER_FACTOR = 3.0
+
+def over_valued(true_base, wrong_base, val):
+    tv = val.get(true_base, 0.0)
+    wv = val.get(wrong_base, 0.0)
+    return (wv >= HIGH_YEN and wv >= max(tv, 1.0) * OVER_FACTOR), tv, wv
+
+
 def summarize(res):
     c = Counter(classify(cl, rb) for cl, rb, _ in res)
     return c["correct"], c["mis"], c["unresolved"]
@@ -280,6 +311,8 @@ def margin_sweep(labels, bases, V, M, bar, eps_list):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", help="prior learned_seed.json to diff against")
+    ap.add_argument("--candidate", help="candidate learned_seed.json to test "
+                    "(default: the bundled data/learned_seed.json)")
     ap.add_argument("--bar", type=float, default=0.075,
                     help="confident-match distance (app learned-ref auto bar = 0.075)")
     ap.add_argument("--edge-sweep",
@@ -332,7 +365,7 @@ def main() -> None:
         return
 
     catalog = load_refs()
-    cur_seed = load_seed(DATA / "learned_seed.json")
+    cur_seed = load_seed(Path(args.candidate) if args.candidate else DATA / "learned_seed.json")
     cb, cV, cM = stack(catalog + cur_seed)
     if args.margin_sweep:
         eps_list = [float(x) for x in args.margin_sweep.split(",")]
@@ -355,10 +388,13 @@ def main() -> None:
           f"(of {len(labels)})")
 
     lines = []
+    verdict = high_lines = phantom = None
     if args.baseline:
+        val = load_values(items)
         base_seed = load_seed(Path(args.baseline))
         bb, bV, bM = stack(catalog + base_seed)
         base = resolve_all(labels, bb, bV, bM, args.bar)
+        bc, bm, bu = summarize(base)
         regressions, improvements = [], 0
         for (cl, rb_cur, _), (_, rb_base, _) in zip(cur, base):
             cur_cls = classify(cl, rb_cur)
@@ -367,31 +403,55 @@ def main() -> None:
                 regressions.append((cl, rb_cur))      # got broken by the new seeds
             elif base_cls != "correct" and cur_cls == "correct":
                 improvements += 1
-        print(f"\nDIFF vs baseline ({len(base_seed)} entries) — attributable to the "
-              f"{len(cur_seed) - len(base_seed)}-entry change:")
-        print(f"  *** REGRESSIONS (now confidently WRONG): {len(regressions)} ***")
-        print(f"      improvements (now correct): {improvements}")
-        pairs = Counter((a, b) for a, b in regressions)
-        for (a, b), n in pairs.most_common(25):
-            an = f"{a}（{ja.get(a)}）" if ja.get(a) else a
-            bn = f"{b}（{ja.get(b)}）" if ja.get(b) else b
-            lines.append(f"- {an}  ->誤→  {bn}   ({n})")
-            print("   " + lines[-1])
-        verdict = ("CLEAN — no new mis-matches" if not regressions
-                   else f"{len(regressions)} label(s) regressed — inspect above")
-        print(f"\nVERDICT: {verdict}")
+        pairs = Counter(regressions)
+        # value-weight: split new MIS into high-value over-valuations vs the rest,
+        # and total the "phantom yen" (appraisal money the misIDs would invent).
+        def f(b):
+            return f"{b}（{ja[b]}）" if ja.get(b) else b
+        high, rest, phantom = [], [], 0.0
+        for (a, b), n in pairs.most_common():
+            ov, tv, wv = over_valued(a, b, val)
+            phantom += max(0.0, wv - tv) * n
+            row = f"- {f(a)} ¥{tv:,.0f}  ->誤→  {f(b)} ¥{wv:,.0f}   (×{n})"
+            (high if ov else rest).append(row)
+
+        dcorr, dmis = cc - bc, cm - bm
+        print(f"\n================ PUSH前チェック ({len(base_seed)}→{len(cur_seed)} seeds) ================")
+        print(f"  認識(正解)   : {bc:5d} → {cc:5d}   ({dcorr:+d})   ← ↑がよい")
+        print(f"  誤爆(確信誤り): {bm:5d} → {cm:5d}   ({dmis:+d})   ← ↓がよい")
+        print(f"  今回ふえた誤爆: {len(regressions)}件 / {len(pairs)}種   うち高額過大査定 {len(high)}種")
+        print(f"  金額被害(誤って増える査定額の合計): ¥{phantom:,.0f}")
+        if high:
+            verdict = f"🔴 PUSH NG — 高額過大査定 {len(high)}種。下記シードを除去してから出すこと"
+        elif dcorr > 0 and improvements >= len(regressions):
+            verdict = "🟢 PUSH OK — 認識↑・高額誤爆なし"
+        elif dcorr > 0:
+            verdict = "🟡 要確認 — 認識は↑だが誤爆も増加（高額はなし）"
+        else:
+            verdict = "🟡 要確認 — 認識が増えていない"
+        print(f"  判定: {verdict}")
+        if high:
+            print(f"\n  ⚠ 高額過大査定（要・シード除去）:")
+            for r in high[:25]:
+                print("    " + r)
+        if rest:
+            print(f"\n  低額の近縁誤爆（ガード頼みでも可）: {len(rest)}種")
+            for r in rest[:15]:
+                print("    " + r)
+        lines = high + rest
 
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
-        with open(summ, "a", encoding="utf-8") as f:
-            f.write("### seed regression check\n")
-            f.write(f"- labels tested: **{len(labels)}** (bar {args.bar})\n")
-            f.write(f"- current: correct {cc} / **MIS {cm}** / unresolved {cu}\n")
+        with open(summ, "a", encoding="utf-8") as fh:
+            fh.write("### seed regression check\n")
+            fh.write(f"- labels tested: **{len(labels)}** (bar {args.bar})\n")
+            fh.write(f"- candidate: correct {cc} / **MIS {cm}** / unresolved {cu}\n")
             if args.baseline:
-                f.write(f"- **regressions from this change: {len(regressions)}** "
-                        f"(improvements {improvements})\n")
-                f.write("".join("  " + ln + "\n" for ln in lines)
-                        or ("  (none)\n" if not lines else ""))
+                fh.write(f"- **{verdict}**\n")
+                fh.write(f"- 認識 {bc}→{cc} ({cc-bc:+d}) / 誤爆 {bm}→{cm} ({cm-bm:+d}) / "
+                         f"金額被害 ¥{phantom:,.0f}\n")
+                fh.write("".join("  " + ln + "\n" for ln in lines)
+                         or "  (no new mis-IDs)\n")
 
 
 if __name__ == "__main__":

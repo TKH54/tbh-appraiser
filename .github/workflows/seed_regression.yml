@@ -28,6 +28,12 @@ on:
       render:
         description: "base name: render its label sigs + ref to a PNG artifact (decoration probe)"
         default: ""
+      baseline_ref:
+        description: "git ref/SHA to use as the BEFORE seed (empty=auto: parent of the last learned_seed change)"
+        default: ""
+      candidate_ref:
+        description: "git ref/SHA to use as the AFTER seed (empty=current data/learned_seed.json)"
+        default: ""
 
 permissions:
   contents: read
@@ -43,16 +49,28 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy pillow
-      - name: Get baseline learned_seed (the version before the last change to it)
+      - name: Pick BEFORE (baseline) and AFTER (candidate) seed versions
+        env:
+          BREF: ${{ github.event.inputs.baseline_ref }}
+          CREF: ${{ github.event.inputs.candidate_ref }}
         run: |
-          # last commit that modified learned_seed.json = the latest promotion merge;
-          # its parent has the previous seed set (price-bot commits never touch it).
-          SHA=$(git log -1 --format=%H -- data/learned_seed.json)
-          if [ -n "$SHA" ] && git cat-file -e "${SHA}^:data/learned_seed.json" 2>/dev/null; then
-            git show "${SHA}^:data/learned_seed.json" > baseline_seed.json
-            echo "baseline = learned_seed.json @ ${SHA}^"
+          if [ -n "$BREF" ]; then
+            git show "${BREF}:data/learned_seed.json" > baseline_seed.json
+            echo "baseline = learned_seed.json @ ${BREF}"
           else
-            echo "no baseline available; running current-only"
+            # auto: parent of the last commit that touched learned_seed.json
+            # (= the seed set before the latest promotion; price-bot never touches it).
+            SHA=$(git log -1 --format=%H -- data/learned_seed.json)
+            if [ -n "$SHA" ] && git cat-file -e "${SHA}^:data/learned_seed.json" 2>/dev/null; then
+              git show "${SHA}^:data/learned_seed.json" > baseline_seed.json
+              echo "baseline = learned_seed.json @ ${SHA}^"
+            else
+              echo "no baseline available; running current-only"
+            fi
+          fi
+          if [ -n "$CREF" ]; then
+            git show "${CREF}:data/learned_seed.json" > candidate_seed.json
+            echo "candidate = learned_seed.json @ ${CREF}"
           fi
       - name: Run seed regression check
         env:
@@ -71,6 +89,7 @@ jobs:
           else
             ARGS="--bar ${{ github.event.inputs.bar || '0.075' }}"
             [ -f baseline_seed.json ] && ARGS="$ARGS --baseline baseline_seed.json"
+            [ -f candidate_seed.json ] && ARGS="$ARGS --candidate candidate_seed.json"
             python scripts/seed_regression.py $ARGS
           fi
       - name: Upload render probe
