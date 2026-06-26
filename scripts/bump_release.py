@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BUSTER_RE = re.compile(r"v20260616z([a-z]+)")
+# matches any v<8-digit-date><letter-suffix> buster (e.g. v20260626i or the older
+# v20260616z<letters>); keeps the date, increments the trailing letter suffix.
+BUSTER_RE = re.compile(r"v(\d{8})([a-z]+)")
 
 
 def bump_app_version() -> str:
@@ -49,14 +51,14 @@ def _next_suffix(s: str) -> str:
 
 def bump_buster() -> tuple[str, str]:
     files = [ROOT / "index.html"] + sorted((ROOT / "js").glob("*.js"))
-    cur = None
+    date = suf = None
     for f in files:
         m = BUSTER_RE.search(f.read_text(encoding="utf-8"))
         if m:
-            cur = m.group(1); break
-    if cur is None:
-        sys.exit("no v20260616z<suffix> buster found")
-    old, new = f"v20260616z{cur}", f"v20260616z{_next_suffix(cur)}"
+            date, suf = m.group(1), m.group(2); break
+    if date is None:
+        sys.exit("no v<date><suffix> buster found")
+    old, new = f"v{date}{suf}", f"v{date}{_next_suffix(suf)}"
     for f in files:
         t = f.read_text(encoding="utf-8")
         if old in t:
