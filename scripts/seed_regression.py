@@ -237,7 +237,9 @@ def load_values(items):
 
 # a new MIS is "high-value over-valuation" (the worst) when the wrongly-shown item
 # is expensive AND much pricier than the true item — i.e. it inflates the appraisal.
-HIGH_YEN = 500.0
+# ¥250 catches the real danger (anniversary coins ¥300-1000+, gems) while ignoring
+# the cheap gear↔gear near-twins (most gear is ¥10-200 post-reopening).
+HIGH_YEN = 250.0
 OVER_FACTOR = 3.0
 
 def over_valued(true_base, wrong_base, val):
