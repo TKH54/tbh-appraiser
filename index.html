@@ -260,6 +260,13 @@
   .stockcard img { width:104px; height:74px; object-fit:cover; display:block; cursor:pointer; border:1px solid #30363d; border-radius:.3rem; background:#000; }
   .stockcard:hover img { border-color:#6fb1ff; }
   .stockcard.active img { border:2px solid #ffd60a; box-shadow:0 0 .4rem rgba(255,214,10,.6); }
+  /* plan-hover preview: white spotlight (matches the image's .ov.hl) marks the page
+     the left image just switched to, so the page-number caption tells you which one */
+  .stockcard.peek img { border:2px solid #fff; box-shadow:0 0 .6rem .12rem rgba(255,255,255,.8); }
+  .stockcard.peek .cap { background:#fff; color:#111; font-weight:700; }
+  /* in the listing-plan view drop the gold "current page" marker — but keep the white
+     peek when the editable page is itself the one being shown (active + peek coincide) */
+  #stockStrip.planview .stockcard.active:not(.peek) img { border:1px solid #30363d; box-shadow:none; }
   .stockcard .cap { position:absolute; left:.15rem; top:.15rem; background:rgba(0,0,0,.65);
                     color:#ffd166; font-size:.62rem; padding:.05rem .3rem; border-radius:.25rem; }
   .stockcard .del { position:absolute; right:.1rem; top:.1rem; width:1.1rem; height:1.1rem;
@@ -496,7 +503,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260627a"></script>
+<script type="module" src="js/app.js?v20260627e"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"

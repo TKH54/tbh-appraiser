@@ -640,6 +640,25 @@ function drawScan(scan = SCAN, interactive = true) {
   cvs.style.width = "";
   _shownScan = scan;
   drawOverlays(scan, interactive);
+  markShownStock();           // keep the bottom thumbnail highlight on the shown page
+}
+// Mirror the big image onto the My-Warehouse thumbnails: white-spotlight (`.peek`) the
+// thumbnail of whatever page the big image is showing, so its caption tells you WHICH
+// page number you're looking at (the request: "何番の倉庫か分からない"). Two cases peek:
+//   • PLAN view — the gold `.active` marker is hidden there, so the white peek is the
+//     only highlight (and it marks the shown page even when that's your editable one).
+//   • a hover-preview that switched the image to a page OTHER than your editable one
+//     (`_shownScan !== SCAN`) — in any view; the gold still marks your editable page.
+// When the image is on your editable page in the appraisal view, nothing is peeked (the
+// gold marker does the job). Driven off `_shownScan` (set only in drawScan) so it stays
+// in sync through previews, the stuck-on-leave image, and re-renders alike. No-op if the
+// strip isn't built yet; drawScan / renderStock / applyView all re-apply it.
+function markShownStock() {
+  const planView = VIEW === "plan";
+  document.querySelectorAll("#stockStrip .stockcard").forEach(card => {
+    const st = STOCKS[+card.dataset.i];
+    card.classList.toggle("peek", (planView || _shownScan !== SCAN) && !!st && st.scan === _shownScan);
+  });
 }
 
 // price-band border colours for confirmed cells (index = band p0..p9)
@@ -1239,13 +1258,17 @@ function hlCells(hash, on) {
     o.classList.toggle("dim", on && !!hash && o.dataset.hash !== hash);
   });
 }
-// the main appraisal table only ever lists the page on screen, so hovering a row
-// just spotlights that item's cells (delegated; rows are re-rendered each scan).
+// in 合計査定 the table can pool EVERY stocked page (TABLE_SRC==="stock"), so a row
+// may live on a page the left image isn't showing — hovering switches the image to
+// that page and spotlights the item, same as the plan (uses previewItem, defined
+// below; the listeners only run on hover so the forward ref is fine). Unlike the
+// plan, LEAVING the table snaps the image back to your editable page, whose gold
+// thumbnail anchors this view. In single-page mode every row is on SCAN -> no switch.
 $("rows").addEventListener("mouseover", e => {
   const tr = e.target.closest("tr[data-hash]");
-  if (tr) hlCells(tr.dataset.hash, true);
+  if (tr) previewItem(tr.dataset.hash);
 });
-$("rows").addEventListener("mouseleave", () => hlCells(null, false));
+$("rows").addEventListener("mouseleave", () => { _hoverHash = null; hlCells(null, false); syncShownToScan(); });
 
 // ---- listing-plan hover preview: switch the left image to the item's page ----
 // the plan pools EVERY warehouse page, so a hovered item may live on a page the
@@ -1276,7 +1299,8 @@ $("planBody").addEventListener("mouseover", e => {
   const tr = e.target.closest("tr[data-hash]");
   if (tr) previewItem(tr.dataset.hash);
 });
-// leaving the list keeps the last page shown (no redraw) — just drop the spotlight
+// leaving the list keeps the last page shown (image + its thumbnail stay marked) —
+// just drop the per-item cell spotlight.
 $("planBody").addEventListener("mouseleave", () => { _hoverHash = null; hlCells(null, false); });
 
 $("capBtn").addEventListener("click", connect);
@@ -1503,6 +1527,7 @@ function renderStock() {
        <span class="del" data-del="${i}" title="${esc(t("stock_del_tip"))}">×</span>
        <img src="${st.url}" alt=""></div>`;
   }).join("");
+  markShownStock();      // rebuilt the DOM -> re-apply the preview highlight
 }
 function removeStock(i) {
   const st = STOCKS[i];
@@ -1703,6 +1728,11 @@ function applyView() {
   $("plan").style.display = planView ? "block" : "none";
   $("results").style.display = (!planView && (SCAN || STOCKS.length)) ? "" : "none";
   $("gacha").style.display = (!planView && DATA && DATA.gacha) ? "block" : "none";
+  // in the plan view the gold "editable page" marker on the thumbnails is noise —
+  // only the white preview highlight (the page the big image shows) should appear.
+  $("stockStrip").classList.toggle("planview", planView);
+  markShownStock();                            // view changed -> refresh the peek
+
   const btn = $("planJump");
   if (btn) btn.textContent = planView ? t("to_appraisal") : t("plan_btn");
 }
