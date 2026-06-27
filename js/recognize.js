@@ -369,9 +369,22 @@ const RARITY_HUE = [
   ["Beyond", 155, 175], ["Rare", 90, 122], ["Uncommon", 35, 85],
 ];
 
-function hueToRarity(hue) {
+// Celestial shares the Rare HUE band — its cyan border (hue ≈94) is only ~11 apart
+// from Rare's blue (≈105), too close to split by hue. But the two differ sharply in
+// SATURATION + VALUE: Celestial is a PALE, BRIGHT cyan; Rare is a DEEP, darker blue.
+// Measured from a real getDisplayMedia capture (per-pixel border, S>80 kept):
+// Celestial S≈100 V≈234  vs  Rare S≈170 V≈126. So within the Rare band, a pale+bright
+// pixel is Celestial. Gate on BOTH (S<150 AND V>180): a real Rare (deep+dark) fails
+// both, so this can't turn a Rare into a Celestial (verified: Rare cell 385 Rare / 4
+// Celestial votes; Celestial cells flip 54/22). Divine (yellow) & Cosmic (white) sit
+// outside this band and still need their own handling.
+const CEL_S_MAX = 150, CEL_V_MIN = 180;
+function hueToRarity(hue, s, v) {
   if (hue >= 176) return "Immortal";   // red wrap-around (was 170; raised so Beyond≈169 isn't swallowed)
-  for (const [name, lo, hi] of RARITY_HUE) if (hue >= lo && hue <= hi) return name;
+  for (const [name, lo, hi] of RARITY_HUE) if (hue >= lo && hue <= hi) {
+    if (name === "Rare" && s < CEL_S_MAX && v > CEL_V_MIN) return "Celestial";
+    return name;
+  }
   return null;
 }
 
@@ -393,7 +406,7 @@ function borderRarity(cell) {
     const [hh, s, v] = bgr2hsv(data[o], data[o + 1], data[o + 2]);
     if (s <= 80 || v <= 60) return;
     total++;
-    const r = hueToRarity(hh);
+    const r = hueToRarity(hh, s, v);
     if (r) votes.set(r, (votes.get(r) || 0) + 1);
   };
   for (let y = 0; y < t; y++) for (let x = 0; x < Math.floor(w * 0.60); x++) sample(x, y);

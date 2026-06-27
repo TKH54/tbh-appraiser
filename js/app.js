@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626i";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626i";
-import { detectPageTab } from "./detect.js?v20260626i";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626i";
-import { T, LANGS, pickLang } from "./i18n.js?v20260626i";
+import { Matcher, _internal } from "./recognize.js?v20260626j";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626j";
+import { detectPageTab } from "./detect.js?v20260626j";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626j";
+import { T, LANGS, pickLang } from "./i18n.js?v20260626j";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -15,8 +15,11 @@ const FEE = 1 / 1.15;
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.2";
+const APP_VERSION = "1.7.3";
 const CHANGELOG = [
+  { v: "1.7.3", d: "2026/6/28",
+    ja: "セレスティアル/ディバイン/コズミックなどの上位グレード装備を認識・選択できるように追加。セレスティアルは枠の色から自動で判別します。",
+    en: "Added recognition for top-grade gear (Celestial / Divine / Cosmic) so they're selectable; Celestial is now auto-detected from its border colour." },
   { v: "1.7.2", d: "2026/6/27",
     ja: "出品プランのアイテムにカーソルを合わせると、左の倉庫画像が自動でそのページに切り替わり、該当アイテムをハイライトするようにしました。複数ページでも在庫の場所が一目で分かります。",
     en: "Hovering an item in the listing plan now switches the left warehouse image to the page that holds it and spotlights that item — so you can see where stock sits across multiple pages at a glance." },
