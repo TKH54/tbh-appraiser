@@ -5,13 +5,23 @@ import { Matcher, _internal } from "./recognize.js?v20260626j";
 import { scanImage, variantsByBase } from "./pipeline.js?v20260626j";
 import { detectPageTab } from "./detect.js?v20260626j";
 import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626j";
-import { T, LANGS, pickLang } from "./i18n.js?v20260628a";
+import { T, LANGS, pickLang } from "./i18n.js?v20260628b";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
 // Steam fee model: the buyer pays P, the seller receives P/1.15 (5% Steam +
 // 10% game fee are added ON TOP of the seller's ask) — ≈86.96%, not 85%.
+// BUT each listing has a MINIMUM fee (~4 yen total in JPY: the 5% and 10%
+// parts each floor to a minimum), so once 15% would dip below 4 yen the flat
+// floor bites instead. Crossover: 4/0.15 ≈ ¥27 take-home (≈¥31 list price).
+// Post-reopening most gear is ¥10–200, i.e. right in this range — so net must
+// be net = min(price/1.15, price − 4), not a flat ×0.8696. (friend feedback)
 const FEE = 1 / 1.15;
+const FEE_MIN = 4;   // JPY minimum total sell fee (Steam + game floors)
+function netOf(price) {
+  if (price == null) return null;
+  return Math.max(0, Math.min(price * FEE, price - FEE_MIN));
+}
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
@@ -754,7 +764,7 @@ function aggregate() {
   for (const [hash, qty] of counts) {
     const it = DATA.items[hash] || {};
     const unit = unitPrice(hash);
-    const net = unit != null ? unit * FEE : null;
+    const net = netOf(unit);
     rows.push({
       hash, qty, unit, vol: volume(hash),
       net, total: net != null ? net * qty : null,
@@ -1590,7 +1600,7 @@ function planItems() {
     const unit = unitPriceIn(hash, "cur");          // sell at the CURRENT market
     if (unit == null) continue;
     const p = DATA.prices?.items?.[hash];
-    const net = unit * FEE;
+    const net = netOf(unit);
     const v = p?.v || 0; if (v > 0) anyVol = true;
     const sellH = v > 0 ? (p?.q || 0) / (v / 24) : Infinity;
     // one slot can post a new listing every 8h => at most 3/day, fewer if the
