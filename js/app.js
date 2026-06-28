@@ -5,7 +5,7 @@ import { Matcher, _internal } from "./recognize.js?v20260626j";
 import { scanImage, variantsByBase } from "./pipeline.js?v20260626j";
 import { detectPageTab } from "./detect.js?v20260626j";
 import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626j";
-import { T, LANGS, pickLang } from "./i18n.js?v20260628b";
+import { T, LANGS, pickLang } from "./i18n.js?v20260628c";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
