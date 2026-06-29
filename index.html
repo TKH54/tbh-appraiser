@@ -212,6 +212,10 @@
   .bchip { display:inline-block; padding:.12rem .55rem; border-radius:.6rem; font-weight:700; font-size:.82rem; }
   .bchip.cur  { background:#1b2a1e; border:1px solid #2ea043; color:#aff5b4; }
   .bchip.base { background:#2b2347; border:1px solid #5a4a80; color:#d6c6ff; }
+  /* ⚖️ "exclude listing-restricted top grades" toggle (next to 価格を更新) */
+  #gExBtn { font-size:.78rem; padding:.3rem .75rem; background:#21262d; color:#c9d1d9; border:1px solid #3d444d; border-radius:.5rem; cursor:pointer; }
+  #gExBtn.exon { background:#3a2a12; border-color:#bb8009; color:#ffd596; box-shadow:0 0 .35rem rgba(187,128,9,.35); }
+  .gex-note { color:#ffd596; margin-top:.25rem; }
 
   /* how-to card (top of the results column) — collapsible <details> so the
      tutorial stays available after a scan. Highlights green once connected. */
@@ -437,7 +441,7 @@
       </div>
 
       <div id="gacha" style="display:none;">
-        <div style="display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap;"><h2 id="gTitle" style="margin:0;"></h2><button id="priceRefreshG" style="font-size:.78rem; padding:.3rem .75rem; background:#2d6cdf; color:#fff; box-shadow:0 0 .35rem rgba(45,108,223,.4);"></button></div>
+        <div style="display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap;"><h2 id="gTitle" style="margin:0;"></h2><button id="priceRefreshG" style="font-size:.78rem; padding:.3rem .75rem; background:#2d6cdf; color:#fff; box-shadow:0 0 .35rem rgba(45,108,223,.4);"></button><button id="gExBtn" type="button"></button></div>
         <div class="foot" id="gNote"></div>
         <table><thead><tr>
           <th class="l">Coin</th><th id="ghSpin"></th><th id="ghSell"></th><th class="l"></th>
@@ -503,7 +507,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260628d"></script>
+<script type="module" src="js/app.js?v20260628e"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
