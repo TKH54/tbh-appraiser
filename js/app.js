@@ -17,10 +17,12 @@ const $ = id => document.getElementById(id);
 // Post-reopening most gear is ¥10–200, i.e. right in this range — so net must
 // be net = min(price/1.15, price − 4), not a flat ×0.8696. (friend feedback)
 const FEE = 1 / 1.15;
-const FEE_MIN = 4;   // JPY minimum total sell fee (Steam + game floors)
+const FEE_MIN = 4;   // JPY minimum total sell fee (Steam floor ¥3 + game floor ¥1)
+const NET_MIN = 2;   // you can never receive less than ¥2 (cheapest listing = buyer ¥6 → net ¥2)
 function netOf(price) {
   if (price == null) return null;
-  return Math.max(0, Math.min(price * FEE, price - FEE_MIN));
+  // floor at NET_MIN so sub-¥6 items (e.g. ¥4.9 gems) don't show net ¥1/¥0
+  return Math.max(NET_MIN, Math.min(price * FEE, price - FEE_MIN));
 }
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
