@@ -1,10 +1,10 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626j";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626j";
-import { detectPageTab } from "./detect.js?v20260626j";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626j";
+import { Matcher, _internal } from "./recognize.js?v20260626k";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626k";
+import { detectPageTab } from "./detect.js?v20260626k";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626k";
 import { T, LANGS, pickLang } from "./i18n.js?v20260628e";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
@@ -27,7 +27,7 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.4";
+const APP_VERSION = "1.7.5";
 const CHANGELOG = [
   { v: "1.7.4", d: "2026/6/29",
     ja: "記念コイン期待値に「⚖️ 規制品を除く」ボタンを追加。出品規制中の上位3グレードを除いた、今すぐ換金できる期待値に切り替えられます。",
