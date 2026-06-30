@@ -36,23 +36,41 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy pillow
+      - name: Save pre-promotion seed (baseline for offender-trim)
+        run: cp data/learned_seed.json /tmp/baseline_seed.json
       - name: Run promotion gates
         id: promote
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" | tee /tmp/promote.log
 
-      - name: Bump release so the labels reach returning visitors
+      # Drop every NEW cluster that creates a confident WRONG id (any item, any
+      # price), iterating until the batch adds ZERO new mis-IDs. Enforces the
+      # 100%-accuracy / no-false-positive policy mechanically — see trim_offenders.py.
+      - name: Offender-trim to zero new mis-IDs
+        id: trim
         if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -o pipefail   # fail the job if trim can't reach 0 new mis-IDs
+          python scripts/trim_offenders.py \
+            --baseline /tmp/baseline_seed.json \
+            --candidate data/learned_seed.json \
+            --out data/learned_seed.json \
+            --manifest review_manifest.json | tee /tmp/trim.log
+
+      - name: Bump release so the labels reach returning visitors
+        if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
         run: python scripts/bump_release.py
 
       - name: Render visual review montages
         id: review
-        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
         run: python scripts/render_review.py
 
       - name: Publish review images to the review-assets branch
-        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -68,13 +86,20 @@ jobs:
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" review-assets
 
       - name: Build PR body
-        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
         run: |
           {
             echo "PR_BODY<<PREOF"
-            echo "Auto-generated from Supabase crowd labels (gates: consensus K / conflict / redundancy / already-seeded)."
+            echo "Auto-generated from Supabase crowd labels (gates: consensus K / conflict / redundancy / already-seeded), then **offender-trimmed to ZERO new mis-IDs** (trim_offenders.py)."
             echo ""
             cat pr_body_review.md
+            echo ""
+            echo "<details><summary>offender-trim log (kept survivors / dropped over-greedy clusters)</summary>"
+            echo ""
+            echo '```'
+            cat /tmp/trim.log
+            echo '```'
+            echo "</details>"
             echo ""
             echo "<details><summary>gate log</summary>"
             echo ""
@@ -88,7 +113,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Open PR if learned_seed.json changed
-        if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
+        if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -102,7 +127,7 @@ jobs:
             index.html
           branch: crowd-labels/auto-promote
           delete-branch: true
-          commit-message: "Promote crowd-sourced recognition labels into learned_seed.json"
-          title: "${{ steps.review.outputs.has_flags == 'true' && '⚠ Crowd labels: review needed (consensus fixes)' || 'Crowd labels: promote consensus recognition fixes' }}"
+          commit-message: "Promote crowd labels (offender-trimmed: zero new mis-IDs)"
+          title: "${{ steps.review.outputs.has_flags == 'true' && '⚠ Crowd labels (offender-trimmed, 0 new mis-IDs): review montages' || 'Crowd labels (offender-trimmed: zero new mis-IDs)' }}"
           body: ${{ env.PR_BODY }}
           labels: crowd-labels
