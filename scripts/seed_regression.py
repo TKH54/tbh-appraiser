@@ -215,39 +215,6 @@ def classify(claimed, resolved):
     return "correct" if resolved == claimed else "mis"   # mis = confident WRONG id
 
 
-def load_values(items):
-    """base -> representative DISPLAY value in JPY (median over its graded variants
-    from prices.json: m=real median, else lm=last median, else p=lowest ask). Used
-    to weight a misID by money: a cheap item shown as an expensive one (over-
-    valuation) is the worst per the no-false-positive policy."""
-    import statistics
-    from collections import defaultdict
-    try:
-        pr = json.loads((DATA / "prices.json").read_text(encoding="utf-8")).get("items", {})
-    except Exception:
-        return {}
-    by = defaultdict(list)
-    for h, pv in pr.items():
-        b = items.get(h, {}).get("base")
-        dv = pv.get("m") or pv.get("lm") or pv.get("p")
-        if b and dv:
-            by[b].append(float(dv))
-    return {b: statistics.median(vs) for b, vs in by.items()}
-
-
-# a new MIS is "high-value over-valuation" (the worst) when the wrongly-shown item
-# is expensive AND much pricier than the true item — i.e. it inflates the appraisal.
-# ¥250 catches the real danger (anniversary coins ¥300-1000+, gems) while ignoring
-# the cheap gear↔gear near-twins (most gear is ¥10-200 post-reopening).
-HIGH_YEN = 250.0
-OVER_FACTOR = 3.0
-
-def over_valued(true_base, wrong_base, val):
-    tv = val.get(true_base, 0.0)
-    wv = val.get(wrong_base, 0.0)
-    return (wv >= HIGH_YEN and wv >= max(tv, 1.0) * OVER_FACTOR), tv, wv
-
-
 def summarize(res):
     c = Counter(classify(cl, rb) for cl, rb, _ in res)
     return c["correct"], c["mis"], c["unresolved"]
@@ -390,13 +357,15 @@ def main() -> None:
           f"(of {len(labels)})")
 
     lines = []
-    verdict = high_lines = phantom = None
+    verdict = None
     if args.baseline:
-        val = load_values(items)
         base_seed = load_seed(Path(args.baseline))
         bb, bV, bM = stack(catalog + base_seed)
         base = resolve_all(labels, bb, bV, bM, args.bar)
         bc, bm, bu = summarize(base)
+        # A regression = a label that was correct/'?' before but is confidently WRONG
+        # now — i.e. a NEW mis-ID this batch introduced. This is the ONLY bar:
+        # correct-rate -> 100%, money is irrelevant (a ¥5 twin == a ¥5000 coin).
         regressions, improvements = [], 0
         for (cl, rb_cur, _), (_, rb_base, _) in zip(cur, base):
             cur_cls = classify(cl, rb_cur)
@@ -406,41 +375,30 @@ def main() -> None:
             elif base_cls != "correct" and cur_cls == "correct":
                 improvements += 1
         pairs = Counter(regressions)
-        # value-weight: split new MIS into high-value over-valuations vs the rest,
-        # and total the "phantom yen" (appraisal money the misIDs would invent).
+        new_mis = len(regressions)
+
         def f(b):
             return f"{b}（{ja[b]}）" if ja.get(b) else b
-        high, rest, phantom = [], [], 0.0
-        for (a, b), n in pairs.most_common():
-            ov, tv, wv = over_valued(a, b, val)
-            phantom += max(0.0, wv - tv) * n
-            row = f"- {f(a)} ¥{tv:,.0f}  ->誤→  {f(b)} ¥{wv:,.0f}   (×{n})"
-            (high if ov else rest).append(row)
+        lines = [f"- {f(a)} ->誤→ {f(b)}   (×{n})" for (a, b), n in pairs.most_common()]
 
         dcorr, dmis = cc - bc, cm - bm
         print(f"\n================ PUSH前チェック ({len(base_seed)}→{len(cur_seed)} seeds) ================")
         print(f"  認識(正解)   : {bc:5d} → {cc:5d}   ({dcorr:+d})   ← ↑がよい")
         print(f"  誤爆(確信誤り): {bm:5d} → {cm:5d}   ({dmis:+d})   ← ↓がよい")
-        print(f"  今回ふえた誤爆: {len(regressions)}件 / {len(pairs)}種   うち高額過大査定 {len(high)}種")
-        print(f"  金額被害(誤って増える査定額の合計): ¥{phantom:,.0f}")
-        if high:
-            verdict = f"🔴 PUSH NG — 高額過大査定 {len(high)}種。下記シードを除去してから出すこと"
-        elif dcorr > 0 and improvements >= len(regressions):
-            verdict = "🟢 PUSH OK — 認識↑・高額誤爆なし"
+        print(f"  参考: 新たに正解化 {improvements}件")
+        print(f"  この昇格が新たに生む確信誤爆: {new_mis}件 / {len(pairs)}種   ← 0でなければNG（金額は無関係）")
+        if new_mis > 0:
+            verdict = (f"🔴 PUSH NG — 新規確信誤爆 {new_mis}件。"
+                       f"trim_offenders.py で犯人クラスタを除去（→0）してから出すこと")
         elif dcorr > 0:
-            verdict = "🟡 要確認 — 認識は↑だが誤爆も増加（高額はなし）"
+            verdict = "🟢 PUSH OK — 認識↑・新規確信誤爆0"
         else:
-            verdict = "🟡 要確認 — 認識が増えていない"
+            verdict = "🟡 要確認 — 新規誤爆0だが認識が増えていない"
         print(f"  判定: {verdict}")
-        if high:
-            print(f"\n  ⚠ 高額過大査定（要・シード除去）:")
-            for r in high[:25]:
+        if lines:
+            print(f"\n  新規確信誤爆（除去対象・上位、金額は無関係）:")
+            for r in lines[:25]:
                 print("    " + r)
-        if rest:
-            print(f"\n  低額の近縁誤爆（ガード頼みでも可）: {len(rest)}種")
-            for r in rest[:15]:
-                print("    " + r)
-        lines = high + rest
 
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
@@ -451,7 +409,7 @@ def main() -> None:
             if args.baseline:
                 fh.write(f"- **{verdict}**\n")
                 fh.write(f"- 認識 {bc}→{cc} ({cc-bc:+d}) / 誤爆 {bm}→{cm} ({cm-bm:+d}) / "
-                         f"金額被害 ¥{phantom:,.0f}\n")
+                         f"**新規確信誤爆 {new_mis}件**\n")
                 fh.write("".join("  " + ln + "\n" for ln in lines)
                          or "  (no new mis-IDs)\n")
 
