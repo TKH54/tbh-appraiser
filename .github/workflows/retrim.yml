@@ -1,0 +1,85 @@
+name: Full re-trim (accuracy sweep)
+
+# Periodic FULL offender-trim: re-checks EVERY current learned_seed cluster
+# (not just this week's new ones) against all Supabase crowd labels and drops
+# any that drifted into a confident WRONG id. Enforces the correct-rate->100%
+# policy for clusters that shipped clean but later became offenders as labels
+# grew. Money is NOT a factor. apply=false (default) only MEASURES the
+# accuracy<->coverage tradeoff; apply=true writes survivors and opens a PR.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "false = measure only (dry-run); true = write survivors + open PR"
+        default: "false"
+      bar:
+        description: "confident-match distance bar"
+        default: "0.075"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: retrim
+  cancel-in-progress: false
+
+jobs:
+  retrim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pillow
+      - name: Full re-trim (measure or apply)
+        id: retrim
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.apply }}" = "true" ]; then
+            python scripts/trim_offenders.py --full --out data/learned_seed.json \
+              --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
+          else
+            python scripts/trim_offenders.py --full --dry-run \
+              --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
+          fi
+
+      - name: Bump release (apply only)
+        if: github.event.inputs.apply == 'true'
+        run: python scripts/bump_release.py
+
+      - name: Build PR body (apply only)
+        if: github.event.inputs.apply == 'true'
+        run: |
+          {
+            echo "PR_BODY<<PREOF"
+            echo "Full re-trim: dropped every learned_seed cluster that causes a confident WRONG id vs the current crowd labels (any item, any price). Coverage cost (correct labels / items reverting to '?') is in the log."
+            echo ""
+            echo '```'
+            cat /tmp/retrim.log
+            echo '```'
+            echo "PREOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Open PR (apply only)
+        if: github.event.inputs.apply == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          add-paths: |
+            data/learned_seed.json
+            js/app.js
+            js/detect.js
+            js/pipeline.js
+            js/i18n.js
+            js/recognize.js
+            index.html
+          branch: full-retrim/auto
+          delete-branch: true
+          commit-message: "Full re-trim: drop drifted offender clusters (0 confident mis)"
+          title: "Full re-trim: drop drifted offender clusters (coverage↔accuracy)"
+          body: ${{ env.PR_BODY }}
+          labels: crowd-labels
