@@ -53,16 +53,123 @@ def new_entry_dists(labels, NV, NM, bar):
     return D
 
 
+def full_retrim(labels, claimed, bar, out, dry_run, ja):
+    """FULL re-trim: baseline = catalog refs ONLY; EVERY current learned_seed
+    cluster (new or long-shipped) is a removal candidate. Drops any cluster that
+    is the nearest-and-WRONG ref for a label the catalog alone did not already
+    mis, until no seed cluster causes a confident wrong id. Unlike the per-batch
+    trim this can remove clusters that drifted into offenders after they shipped.
+    Reports the COVERAGE COST (correct labels / distinct items that revert to '?')
+    so the accuracy↔coverage tradeoff is explicit. Writes survivors unless dry-run."""
+    L = len(labels)
+    catalog = load_refs()
+    cand_raw = json.loads((DATA / "learned_seed.json").read_text(encoding="utf-8"))
+    cols, cbase, NVl, NMl = [], [], [], []
+    for ci, e in enumerate(cand_raw):
+        s = unpack(e["v"], e["m"])
+        if s is None:
+            continue
+        cols.append(ci); cbase.append(e["base"]); NVl.append(s[0]); NMl.append(s[1].astype(bool))
+    N = len(cols)
+    base_arr = np.array(cbase, dtype=object)
+
+    # catalog-only baseline: db + which labels the catalog alone already mis-IDs
+    bb, bV, bM = stack(catalog)
+    bres = resolve_all(labels, bb, bV, bM, bar)
+    db = np.array([d for _, _, d in bres], np.float32)
+    cat_is_mis = np.array([rb is not None and rb != cl for cl, rb, _ in bres])
+    cat_resolved = [rb for _, rb, _ in bres]
+
+    NV = np.stack(NVl).astype(np.float32); NM = np.stack(NMl)
+    D = new_entry_dists(labels, NV, NM, bar)
+    idx = np.arange(L)
+
+    def state(removed):
+        """resolved base per label given a set of removed seed columns."""
+        live = [k for k in range(N) if k not in removed]
+        if live:
+            la = np.array(live); sub = D[:, live]
+            loc = sub.argmin(1); dn = sub[idx, loc]; col = la[loc]
+            win = (dn < db) & (dn <= bar)
+        else:
+            win = np.zeros(L, bool); col = np.zeros(L, int)
+        resolved = [base_arr[col[i]] if win[i] else (cat_resolved[i] if db[i] <= bar else None)
+                    for i in range(L)]
+        return resolved, win, col
+
+    def tally(resolved):
+        c = sum(1 for i in range(L) if resolved[i] == claimed[i])
+        m = sum(1 for i in range(L) if resolved[i] is not None and resolved[i] != claimed[i])
+        return c, m
+
+    res0, _, _ = state(set())
+    c0, m0 = tally(res0)
+
+    removed: set[int] = set()
+    while True:
+        live = [k for k in range(N) if k not in removed]
+        if not live:
+            break
+        la = np.array(live); sub = D[:, live]
+        loc = sub.argmin(1); dn = sub[idx, loc]; col = la[loc]
+        win = (dn < db) & (dn <= bar)
+        wrong = win & (base_arr[col] != claimed) & (~cat_is_mis)
+        if not wrong.any():
+            break
+        removed.update(int(c) for c in np.unique(col[wrong]))
+
+    res1, _, _ = state(removed)
+    c1, m1 = tally(res1)
+    items_before = {claimed[i] for i in range(L) if res0[i] == claimed[i]}
+    items_after = {claimed[i] for i in range(L) if res1[i] == claimed[i]}
+    lost_items = sorted(items_before - items_after)
+
+    def f(b):
+        return f"{b}（{ja[b]}）" if ja.get(b) else b
+    print(f"\n================ FULL RE-TRIM {'(dry-run)' if dry_run else ''} "
+          f"({N} clusters) ================")
+    print(f"  クラスタ: {N} → 生存 {N - len(removed)}（削除 {len(removed)}）")
+    print(f"  認識(正解)   : {c0} → {c1}   ({c1 - c0:+d})   ← これがカバー減少ぶん")
+    print(f"  誤爆(確信誤り): {m0} → {m1}   ({m1 - m0:+d})   ← 残りはカタログ由来(シード削除では消せない)")
+    print(f"  完全に認識できなくなるアイテム種: {len(lost_items)}（以前は当たっていたが全滅）")
+    for b in lost_items[:30]:
+        print(f"    - {f(b)}")
+
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a", encoding="utf-8") as fh:
+            fh.write(f"### full re-trim {'(dry-run)' if dry_run else ''}\n"
+                     f"- clusters {N} → kept {N - len(removed)} (dropped {len(removed)})\n"
+                     f"- 認識(正解) {c0} → {c1} (**{c1 - c0:+d}** = coverage cost)\n"
+                     f"- 誤爆 {m0} → {m1} ({m1 - m0:+d}; residual = catalog-caused)\n"
+                     f"- 認識できなくなるアイテム種: **{len(lost_items)}**\n")
+
+    if not dry_run:
+        drop = {cols[k] for k in removed}
+        Path(out).write_text(
+            json.dumps([e for ci, e in enumerate(cand_raw) if ci not in drop],
+                       separators=(",", ":")), encoding="utf-8")
+        print(f"\nwrote {out} ({N - len(removed)} clusters)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--baseline", required=True, help="seed BEFORE this promotion")
-    ap.add_argument("--candidate", required=True,
+    ap.add_argument("--baseline", help="seed BEFORE this promotion (per-batch mode)")
+    ap.add_argument("--candidate",
                     help="seed AFTER this promotion (= baseline + appended new clusters)")
-    ap.add_argument("--out", required=True, help="where to write the trimmed seed")
+    ap.add_argument("--out", help="where to write the trimmed seed")
     ap.add_argument("--bar", type=float, default=0.075,
                     help="confident-match distance (app learned-ref auto bar = 0.075)")
     ap.add_argument("--manifest", help="review_manifest.json to prune to survivors (optional)")
+    ap.add_argument("--full", action="store_true",
+                    help="FULL re-trim: every current learned_seed cluster is a removal "
+                         "candidate (baseline = catalog only). Reports coverage cost.")
+    ap.add_argument("--dry-run", action="store_true", help="measure only; do not write")
     args = ap.parse_args()
+    if not args.full and not (args.baseline and args.candidate and args.out):
+        ap.error("per-batch mode needs --baseline, --candidate and --out (or use --full)")
+    if args.full and not args.dry_run and not args.out:
+        ap.error("--full write mode needs --out (or add --dry-run to only measure)")
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
     key = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -88,6 +195,10 @@ def main() -> None:
     L = len(labels)
     print(f"fetched {len(rows)} rows -> {L} valid catalog labels")
     claimed = np.array([b for b, _ in labels], dtype=object)
+
+    if args.full:
+        full_retrim(labels, claimed, args.bar, args.out, args.dry_run, ja)
+        return
 
     catalog = load_refs()
     base_seed = load_seed(Path(args.baseline))
