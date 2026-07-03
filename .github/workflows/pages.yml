@@ -1,0 +1,52 @@
+# GitHub Pages deploy via Actions — REPLACES the built-in "pages build and
+# deployment" (classic branch deploy). WHY: the classic builder runs with no
+# concurrency guard, so the price bot's ~8-min deploy-key pushes occasionally
+# raced each other and one lost with "Deployment failed, try again later."
+# Harmless to the site (the next push always redeployed) but it spammed FAILURE
+# emails. A workflow-based deploy lets us serialise deploys with a concurrency
+# group, so overlapping deploys QUEUE instead of colliding -> no more failures.
+#
+# The site still redeploys on EVERY push to main (data pushes included), so the
+# ~10-min price snapshots stay fresh — same freshness as before, just no races.
+#
+# One-time switch that enables this: Pages build_type = "workflow" (done via the
+# API / Settings -> Pages -> Source: GitHub Actions). To revert to the classic
+# builder, set Source back to "Deploy from a branch" (main / root).
+name: pages-deploy
+on:
+  push:
+    branches: [main]        # every push (incl. the price-bot SSH deploy-key
+                            # pushes, which DO fire push events) redeploys
+  workflow_dispatch:        # manual redeploy / first deploy after the switch
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+# Serialise deploys: at most one running + one pending; a newer push supersedes
+# the pending one. cancel-in-progress:false so an in-flight publish is never cut
+# mid-way (GitHub's recommended setting for Pages). Separate group from the
+# price chain's `prices`, so the two never block each other.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/configure-pages@v5
+      # Serve the repo root (identical to the old branch "/" deploy) but stage
+      # into _site MINUS .git, so the artifact isn't bloated by the large,
+      # frequently-churned binary history (prices/history/learned_seed).
+      - name: Stage site (repo root, excluding VCS)
+        run: |
+          mkdir -p _site
+          rsync -a --exclude='.git' --exclude='_site' ./ _site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
