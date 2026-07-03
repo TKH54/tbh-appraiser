@@ -1164,7 +1164,10 @@ function applyMode() {
     bn.innerHTML = esc(tu("banner_base")) + ` <a href="#" id="bnSwap">${esc(t("to_cur"))}</a>`;
   } else {
     bn.className = "cur";
-    const ts = DATA?.prices?.t ? new Date(DATA.prices.t).toLocaleString(LANG) : "—";
+    // include the timezone name (e.g. GMT+9 / GMT+8) so viewers in any locale
+    // can tell WHICH timezone the snapshot time is in — toLocaleString renders
+    // in the browser's local TZ, which differs per country and was unlabelled.
+    const ts = DATA?.prices?.t ? new Date(DATA.prices.t).toLocaleString(LANG, { timeZoneName: "short" }) : "—";
     bn.innerHTML = esc(tu("banner_cur")(ts)) + ` <a href="#" id="bnSwap">${esc(t("to_base"))}</a>`;
   }
   $("bnSwap").onclick = ev => { ev.preventDefault(); setMode(MODE === "base" ? "cur" : "base"); };
