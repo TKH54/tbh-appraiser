@@ -34,7 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      # Static URL: the deploy step is retried (see below) so no single step id is
+      # guaranteed to hold page_url; the site URL is fixed anyway.
+      url: https://tkh54.github.io/tbh-appraiser/
     steps:
       - uses: actions/checkout@v5
       - uses: actions/configure-pages@v5
@@ -48,5 +50,28 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
-      - id: deployment
+      # actions/deploy-pages intermittently returns "Deployment failed, try again
+      # later." from the Pages backend when deploys arrive in quick succession
+      # (our ~10-min data pushes): the concurrency group serialises the *jobs*,
+      # but the backend can still be settling the previous deployment when the
+      # next one is created. It's transient — a retry almost always wins — but an
+      # unretried failure marks the run red and spams a FAILURE email. So try up
+      # to 3 times (with a short settle delay), and only let the run go red if a
+      # genuine, persistent error survives all attempts. Site content is
+      # unchanged either way; each attempt redeploys the same artifact.
+      - id: deploy1
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Settle before retry 1
+        if: steps.deploy1.outcome == 'failure'
+        run: sleep 30
+      - id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Settle before retry 2
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        run: sleep 45
+      - id: deploy3
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
         uses: actions/deploy-pages@v4
