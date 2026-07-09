@@ -30,11 +30,8 @@ const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 const APP_VERSION = "1.7.9";
 const CHANGELOG = [
   { v: "1.7.9", d: "2026/7/9",
-    ja: "「一番のお宝」に薄商い（価格が当てにならない）銘柄が選ばれないよう修正。",
-    en: "The “top find” spotlight now skips thin-market items whose price is unreliable." },
-  { v: "1.7.7", d: "2026/7/9",
-    ja: "取引が薄く価格が当てにならない銘柄に「薄商い」表示を追加。",
-    en: "Flag illiquid items whose price is unreliable as “Thin market.”" },
+    ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
+    en: "Improved handling of thinly-traded (“thin market”) items with unreliable prices." },
   { v: "1.7.6", d: "2026/7/9",
     ja: "ディバイン・コズミック等級を自動認識するように対応。",
     en: "Added auto-detection for Divine & Cosmic grades." },
