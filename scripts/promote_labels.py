@@ -30,6 +30,7 @@ import base64
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from collections import defaultdict
 from datetime import datetime
@@ -57,16 +58,38 @@ BURST_SPAN_S = 300     # all K agreeing submissions inside this window = possibl
 K_RISKY = 5            # a cluster whose nearest catalog ref is a DIFFERENT item needs this many agrees
 
 
+def _get(u: str, headers: dict) -> list[dict]:
+    with urllib.request.urlopen(urllib.request.Request(u, headers=headers), timeout=60) as r:
+        return json.loads(r.read())
+
+
 def fetch_rows(url: str, key: str) -> list[dict]:
-    """All label rows via the REST API using the service_role key (bypasses RLS)."""
-    rows, offset, page = [], 0, 1000
+    """All label rows (service_role key, bypasses RLS). KEYSET-paginate on the
+    primary key `id` (indexed, unique) so it's O(n) with no offset row-cap — the old
+    OFFSET paging was O(n^2) and appeared to truncate at ~50k. Falls back to offset
+    paging if the table has no usable `id` column (KeyError) or the id query errors."""
+    headers = {"apikey": key, "Authorization": "Bearer " + key}
+    base = f"{url}/rest/v1/labels?select=*"
+    page = 1000
+    try:
+        rows, last = [], None
+        while True:
+            q = f"{base}&order=id.asc&limit={page}" + (f"&id=gt.{last}" if last is not None else "")
+            batch = _get(q, headers)
+            if not batch:
+                break
+            if "id" not in batch[0]:
+                raise KeyError("labels table has no id column")
+            rows += batch
+            last = batch[-1]["id"]
+            if len(batch) < page:
+                break
+        return rows
+    except (urllib.error.HTTPError, KeyError):
+        pass  # keyset unavailable -> proven offset paging (slower, but correct)
+    rows, offset = [], 0
     while True:
-        req = urllib.request.Request(
-            f"{url}/rest/v1/labels?select=*&order=created_at.asc"
-            f"&offset={offset}&limit={page}",
-            headers={"apikey": key, "Authorization": "Bearer " + key})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            batch = json.loads(r.read())
+        batch = _get(f"{base}&order=created_at.asc&offset={offset}&limit={page}", headers)
         rows += batch
         if len(batch) < page:
             break
