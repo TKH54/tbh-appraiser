@@ -5,7 +5,7 @@ import { Matcher, _internal } from "./recognize.js?v20260626l";
 import { scanImage, variantsByBase } from "./pipeline.js?v20260626l";
 import { detectPageTab } from "./detect.js?v20260626l";
 import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626l";
-import { T, LANGS, pickLang } from "./i18n.js?v20260628e";
+import { T, LANGS, pickLang } from "./i18n.js?v20260628f";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,8 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.6";
+const APP_VERSION = "1.7.7";
 const CHANGELOG = [
+  { v: "1.7.7", d: "2026/7/9",
+    ja: "取引が薄く価格が当てにならない銘柄に「薄商い」表示を追加。",
+    en: "Flag illiquid items whose price is unreliable as “Thin market.”" },
   { v: "1.7.6", d: "2026/7/9",
     ja: "ディバイン・コズミック等級を自動認識するように対応。",
     en: "Added auto-detection for Divine & Cosmic grades." },
@@ -252,6 +255,17 @@ const marketSearchUrl = base => `https://steamcommunity.com/market/search?appid=
 //    far below it (ask < ref*STALE_FACTOR) -> the market moved down, use the live ask.
 const STALE_FACTOR = 0.5;   // ask below this fraction of the median ref = crashed market
 const STALE_Q = 10;         // ...this many listings deep = real undercutting, not a lone lowball
+const GHOST_DIVERGE = 1.8;  // stale-lm vs lone-ask gap above which a thin market's shown price is unreliable
+// A thin market (q<STALE_Q) with no fresh median AND no volume falls back to the last
+// median (p.lm) below. When that lm diverges sharply from the current lone ask we don't
+// actually know the price (e.g. the top-grade items whose Steam page won't even load) —
+// flag it in the table rather than present a confident, often-stale number.
+function priceThin(p) {
+  if (!p || p.m != null || p.v) return false;      // fresh median or any volume = real market
+  if (p.lm == null || p.p == null) return false;    // need both to compare
+  if ((p.q || 0) >= STALE_Q) return false;          // deep ask = reliable live floor (realUnit uses it)
+  return Math.max(p.p / p.lm, p.lm / p.p) >= GHOST_DIVERGE;
+}
 function realUnit(p) {
   if (!p) return null;
   // reopen-CRASH override (must run even when a fresh median EXISTS): the per-item
@@ -832,8 +846,10 @@ function renderTable() {
     // items that just happened to be sold out when it was built.
     const bl = DATA.baseline[r.hash];
     const neverListed = r.synth && !(bl && bl[1] > 0) && !DATA.prices?.items?.[r.hash];
+    const thin = MODE !== "base" && priceThin(DATA.prices?.items?.[r.hash]);
     if (neverListed) badge = `<span class="pill never" title="${esc(t("badge_never_tip"))}">${esc(t("badge_never"))}</span>`;
     else if (r.unit == null) badge = `<span class="pill info" title="${esc(t(MODE === "base" ? "badge_nosale_tip" : "badge_noprice"))}">${esc(t(MODE === "base" ? "badge_nosale" : "badge_noprice"))}</span>`;
+    else if (thin) badge = `<span class="pill info" title="${esc(t("badge_thin_tip"))}">${esc(t("badge_thin"))}</span>`;
     // never-listed items have no Steam listing page -> send to a market search
     const href = neverListed ? marketSearchUrl(DATA.items[r.hash]?.base || r.name) : marketUrl(r.hash);
     // premium price-tier bar behind the item name: a SOLID tier-colour left edge
@@ -854,7 +870,7 @@ function renderTable() {
       <td${nameAttr}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
         <br><span class="rar" style="color:${bc}">${esc(r.rarity || "")}</span></td>
       <td>${r.qty}</td>
-      <td class="num1">${yen(r.unit)}${(() => { const tr = trendChip(r.hash), ak = lowestAskNote(r.hash); return (tr || ak) ? `<br><span class="sub">${tr}${ak}</span>` : ""; })()}</td>
+      <td class="num1">${yen(r.unit, thin ? "muted" : undefined)}${(() => { const tr = trendChip(r.hash), ak = lowestAskNote(r.hash); return (tr || ak) ? `<br><span class="sub">${tr}${ak}</span>` : ""; })()}</td>
       <td>${yen(r.net, "num")}</td>
       <td>${yen(r.total, "num")}</td>
       <td>${r.vol == null ? '<span class="muted">—</span>' : r.vol.toLocaleString()}</td>
