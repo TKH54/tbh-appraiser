@@ -47,13 +47,24 @@ jobs:
               --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
           fi
 
-      - name: Coin drop-ref experiment (measure-only)
+      - name: Next-offenders drop-ref experiment (measure-only)
         if: github.event.inputs.apply != 'true'
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        # Coin already removed; measure the residual/next offenders. The per-base
+        # COST (genuine-label recognition lost) decides: cost≈0 = pure-win removal
+        # (like the coin), cost>0 = a real item -> leave the ref, use the guard.
         run: |
           python scripts/trim_offenders.py \
-            --drop-ref "Kingdom 10th Anniversary Coin" \
+            --drop-ref "Copper Nugget" \
+            --drop-ref "Buckler" \
+            --drop-ref "Copper Bracer" \
+            --drop-ref "Wooden Boots" \
+            --drop-ref "Vengeance Sword" \
+            --drop-ref "Ethereal Amulet" \
+            --drop-ref "War Armor" \
+            --drop-ref "Shadow Bow" \
+            --drop-ref "Rune Plate" \
             --bar "${{ github.event.inputs.bar || '0.075' }}" | tee -a /tmp/retrim.log
 
       - name: Upload offender report (catalog-offender ranking)
