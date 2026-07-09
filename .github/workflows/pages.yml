@@ -75,3 +75,12 @@ jobs:
       - id: deploy3
         if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
         uses: actions/deploy-pages@v4
+
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          jq -n --arg c "❌ **Pagesデプロイが失敗**（3回リトライ後）。サイトへの反映が停止した可能性 → $RUN_URL" '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"

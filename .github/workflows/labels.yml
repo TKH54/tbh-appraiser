@@ -140,6 +140,7 @@ jobs:
       # Quarantine never reaches here (promote --safe-only holds it). The job already
       # failed if trim left any new mis-ID, so reaching this step means mis-delta <= 0.
       - name: Auto-merge the Safe PR
+        id: automerge
         if: >-
           github.event.inputs.auto_merge == 'true'
           && steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
@@ -149,3 +150,23 @@ jobs:
         run: |
           echo "auto-merging Safe PR #${{ steps.cpr.outputs.pull-request-number }} (quarantine held: ${{ steps.promote.outputs.quarantine }})"
           gh pr merge "${{ steps.cpr.outputs.pull-request-number }}" --merge --repo "$GITHUB_REPOSITORY"
+
+      - name: Notify Discord — auto-merged
+        if: steps.automerge.outcome == 'success'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          jq -n --arg c "✅ **クラウドラベル昇格**：Safe PR #${{ steps.cpr.outputs.pull-request-number }} を自動マージしました（Quarantine保留: ${{ steps.promote.outputs.quarantine }}件 / Safe: ${{ steps.trim.outputs.survivors }}件）。$RUN_URL" '{content:$c}' \
+            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+
+      - name: Notify Discord — failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          jq -n --arg c "❌ **クラウドラベル昇格が失敗**（${{ github.ref_name }}）。offender-trimが0に到達できない/スクリプトエラー等の可能性。自動マージはされていません。要確認 → $RUN_URL" '{content:$c}' \
+            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"

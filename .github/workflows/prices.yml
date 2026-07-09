@@ -97,3 +97,12 @@ jobs:
             sleep 5
           done
           echo "::error::push failed 3 times"; exit 1
+
+      - name: Notify Discord on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          jq -n --arg c "❌ **価格スナップショットCIが失敗**。価格の自動更新チェーンが停止した可能性（価格が固まる）。再開が必要かも → $RUN_URL" '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
