@@ -27,7 +27,7 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.10";
+const APP_VERSION = "1.7.11";
 const CHANGELOG = [
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
