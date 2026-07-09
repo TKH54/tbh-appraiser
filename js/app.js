@@ -27,11 +27,8 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.10";
+const APP_VERSION = "1.7.9";
 const CHANGELOG = [
-  { v: "1.7.10", d: "2026/7/9",
-    ja: "価格の自動更新が長時間止まったとき、ツールの不具合ではなく配信元 GitHub（Actions／Pages）側の遅延・障害が原因だと知らせるバナーを追加。",
-    en: "Added a banner shown when price updates stall for a while — clarifying it's a GitHub-side (Actions/Pages) delay or outage, not a bug in the tool." },
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
     en: "Improved handling of thinly-traded (“thin market”) items with unreliable prices." },
