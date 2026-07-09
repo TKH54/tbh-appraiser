@@ -49,24 +49,33 @@ def _next_suffix(s: str) -> str:
     return "a" + "".join(arr)
 
 
-def bump_buster() -> tuple[str, str]:
+def bump_buster() -> list[tuple[str, str]]:
+    """Bump EVERY distinct v<date><suffix> cache-buster across index.html + js/*.js,
+    not just the first. The app.js ENTRY buster (index.html) and the module-graph
+    buster (the ES-module imports) had drifted to different values; bumping only the
+    first left the other stale, so a cached app.js kept importing the old module and
+    returning visitors never saw the change. Each distinct buster keeps its date and
+    gets its suffix incremented; a single-pass regex sub avoids chained double-bumps
+    when two busters differ only by suffix. Returns the (old, new) mappings applied."""
     files = [ROOT / "index.html"] + sorted((ROOT / "js").glob("*.js"))
-    date = suf = None
-    for f in files:
-        m = BUSTER_RE.search(f.read_text(encoding="utf-8"))
-        if m:
-            date, suf = m.group(1), m.group(2); break
-    if date is None:
+    texts = {f: f.read_text(encoding="utf-8") for f in files}
+    busters = {m.group(0) for t in texts.values() for m in BUSTER_RE.finditer(t)}
+    if not busters:
         sys.exit("no v<date><suffix> buster found")
-    old, new = f"v{date}{suf}", f"v{date}{_next_suffix(suf)}"
-    for f in files:
-        t = f.read_text(encoding="utf-8")
-        if old in t:
-            f.write_text(t.replace(old, new), encoding="utf-8")
-    return old, new
+    mapping = {}
+    for old in busters:
+        m = BUSTER_RE.fullmatch(old)
+        mapping[old] = f"v{m.group(1)}{_next_suffix(m.group(2))}"
+    for f, t in texts.items():
+        new_t = BUSTER_RE.sub(lambda mo: mapping.get(mo.group(0), mo.group(0)), t)
+        if new_t != t:
+            f.write_text(new_t, encoding="utf-8")
+    return sorted(mapping.items())
 
 
 if __name__ == "__main__":
     ver = bump_app_version()
-    old, new = bump_buster()
-    print(f"APP_VERSION -> {ver}; cache-buster {old} -> {new}")
+    mapping = bump_buster()
+    print(f"APP_VERSION -> {ver}")
+    for old, new in mapping:
+        print(f"cache-buster {old} -> {new}")
