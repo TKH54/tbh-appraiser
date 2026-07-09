@@ -376,13 +376,24 @@ const RARITY_HUE = [
 // Celestial S≈100 V≈234  vs  Rare S≈170 V≈126. So within the Rare band, a pale+bright
 // pixel is Celestial. Gate on BOTH (S<150 AND V>180): a real Rare (deep+dark) fails
 // both, so this can't turn a Rare into a Celestial (verified: Rare cell 385 Rare / 4
-// Celestial votes; Celestial cells flip 54/22). Divine (yellow) & Cosmic (white) sit
-// outside this band and still need their own handling.
+// Celestial votes; Celestial cells flip 54/22).
 const CEL_S_MAX = 150, CEL_V_MIN = 180;
+
+// Divine shares Legendary's gold HUE band, so hue alone can't split them. Measured
+// from the game's own ItemSlot_GradeBg_* textures (which line up 1:1 with the
+// captured bands above — Legendary hue≈14, Divine hue≈19), the two differ sharply in
+// SATURATION + VALUE: Divine is a PALE, BRIGHT gold; Legendary a DEEP, dark gold —
+// Legendary S≈248 V≈141  vs  Divine S≈129 V≈226. Gate on BOTH (S<175 AND V>195): a
+// real Legendary (deep+dark) fails both, so this can't flip a Legendary into a Divine.
+// NOTE: Cosmic ALSO lives in this gold band — its border is a fiery ORANGE (NOT white
+// as once assumed) that mixes red+gold, so per-pixel hue can't tell it from Legendary.
+// It is detected by that red+gold MIX in borderRarity() below, not here.
+const DIV_S_MAX = 175, DIV_V_MIN = 195;
 function hueToRarity(hue, s, v) {
   if (hue >= 176) return "Immortal";   // red wrap-around (was 170; raised so Beyond≈169 isn't swallowed)
   for (const [name, lo, hi] of RARITY_HUE) if (hue >= lo && hue <= hi) {
     if (name === "Rare" && s < CEL_S_MAX && v > CEL_V_MIN) return "Celestial";
+    if (name === "Legendary" && s < DIV_S_MAX && v > DIV_V_MIN) return "Divine";
     return name;
   }
   return null;
@@ -412,6 +423,16 @@ function borderRarity(cell) {
   for (let y = 0; y < t; y++) for (let x = 0; x < Math.floor(w * 0.60); x++) sample(x, y);
   for (let y = 0; y < Math.floor(h * 0.60); y++) for (let x = 0; x < t; x++) sample(x, y);
   if (total < 5) return "Common";
+  // Cosmic's fiery border is the ONLY grade that mixes RED (Immortal-band) and GOLD
+  // (Legendary/Divine-band) pixels in a single frame — measured from the game's
+  // ItemSlot_GradeBg_* textures: Cosmic ~44% red + ~53% gold, vs Legendary 0%+100%,
+  // Immortal 100%+0%, Divine 0%+52% (verified unique across all 10 grades). Its
+  // plurality bucket is Legendary, so this MUST run before the plurality pick below
+  // or a Cosmic mislabels as Legendary. Requiring BOTH bands ≥20% of sampled px is
+  // far from any solid-colour grade, so a real Legendary/Immortal can't trip it.
+  const cosRed = votes.get("Immortal") || 0;
+  const cosGold = (votes.get("Legendary") || 0) + (votes.get("Divine") || 0);
+  if (total >= 20 && cosRed >= total * 0.2 && cosGold >= total * 0.2) return "Cosmic";
   let best = null, bestN = 0;
   for (const [name, n] of votes) if (n > bestN) { bestN = n; best = name; }
   return best;
