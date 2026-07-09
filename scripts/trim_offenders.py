@@ -177,6 +177,104 @@ def catalog_offender_report(labels, claimed, cat_is_mis, cat_resolved, ja,
     return ranking
 
 
+def drop_ref_experiment(labels, claimed, drop_bases, bar, ja, out_path=None):
+    """MEASURE-ONLY: what happens if we drop the CATALOG ref(s) for `drop_bases`
+    from the matcher (keeping every learned_seed cluster)? For a broad-attractor
+    like a flat/dark coin ref, this should remove a large block of confident
+    mis-IDs (BENEFIT) at the cost only of genuine captures of that base that
+    relied on the bad ref (COST). Resolves all labels twice (catalog+seed vs the
+    same minus the dropped catalog refs) and reports the exact deltas + where the
+    freed victims land. Nothing is written to refs/seed — this only informs the
+    accept/reject decision before any live-recognition change."""
+    catalog = load_refs()
+    seed = load_seed(DATA / "learned_seed.json")
+    drop = set(drop_bases)
+    present = {b for b, _ in catalog}
+    missing = drop - present
+    if missing:
+        print(f"WARNING: not in catalog refs, ignored: {sorted(missing)}")
+
+    def f(b):
+        return f"{b}（{ja[b]}）" if ja.get(b) else b
+
+    bb, bV, bM = stack(catalog + seed)                       # production ref set
+    base_res = resolve_all(labels, bb, bV, bM, bar)
+    cat2 = [(b, s) for (b, s) in catalog if b not in drop]   # drop only the catalog ref(s)
+    eb, eV, eM = stack(cat2 + seed)
+    exp_res = resolve_all(labels, eb, eV, eM, bar)
+
+    def tally(res):
+        c = m = u = 0
+        for cl, rb, _ in res:
+            k = classify(cl, rb)
+            c += k == "correct"; m += k == "mis"; u += k == "unresolved"
+        return c, m, u
+
+    c0, m0, u0 = tally(base_res)
+    c1, m1, u1 = tally(exp_res)
+    L = len(labels)
+
+    print(f"\n================ DROP-REF EXPERIMENT (measure-only) ================")
+    print(f"  外すカタログref: {', '.join(f(b) for b in drop_bases)}")
+    print(f"  labels {L} / bar {bar}  (learned_seedは保持)")
+    print(f"  {'':8}{'correct':>8}{'mis':>8}{'?':>9}")
+    print(f"  BEFORE {c0:>8}{m0:>8}{u0:>9}   (catalog+seed)")
+    print(f"  AFTER  {c1:>8}{m1:>8}{u1:>9}   (ref除去)")
+    print(f"  Δ      {c1-c0:>+8}{m1-m0:>+8}{u1-u0:>+9}   ← 誤爆Δが大きく負・正解Δが小さいほど良い")
+
+    # COST: genuine labels of each dropped base — how many correct captures we lose
+    cost = {}
+    for b in drop_bases:
+        idx = [i for i in range(L) if claimed[i] == b]
+        before = Counter(classify(claimed[i], base_res[i][1]) for i in idx)
+        after = Counter(classify(claimed[i], exp_res[i][1]) for i in idx)
+        cost[b] = {"n": len(idx), "before": dict(before), "after": dict(after),
+                   "lost_correct": before.get("correct", 0) - after.get("correct", 0)}
+        print(f"\n  COST 本物の {f(b)}: {len(idx)} labels")
+        print(f"    before correct {before.get('correct',0)} / mis {before.get('mis',0)} / '?' {before.get('unresolved',0)}")
+        print(f"    after  correct {after.get('correct',0)} / mis {after.get('mis',0)} / '?' {after.get('unresolved',0)}"
+              f"   → 失う正解 {cost[b]['lost_correct']}")
+
+    # BENEFIT: labels the dropped ref was STEALING (mis -> a dropped base)
+    stolen = [i for i in range(L)
+              if base_res[i][1] in drop and base_res[i][1] != claimed[i]]
+    land = Counter(classify(claimed[i], exp_res[i][1]) for i in stolen)
+    print(f"\n  BENEFIT 犯人refが奪っていた {len(stolen)} labels の行き先:")
+    print(f"    → '?' {land.get('unresolved',0)}（正しい安全側） | "
+          f"correct {land.get('correct',0)}（wrong→正解のボーナス） | "
+          f"別の確信誤り {land.get('mis',0)}（まだ誤爆＝残offender）")
+    # if some freed victims still land on a NEW wrong base, name the next offenders
+    still = Counter(exp_res[i][1] for i in stolen if classify(claimed[i], exp_res[i][1]) == "mis")
+    if still:
+        print(f"    残offender上位: " + "  ".join(f"{f(b)}×{n}" for b, n in still.most_common(6)))
+
+    report = {"drop_bases": list(drop_bases), "bar": bar,
+              "before": {"correct": c0, "mis": m0, "unresolved": u0},
+              "after": {"correct": c1, "mis": m1, "unresolved": u1},
+              "delta": {"correct": c1 - c0, "mis": m1 - m0, "unresolved": u1 - u0},
+              "cost": cost,
+              "benefit": {"stolen": len(stolen), "to_unresolved": land.get("unresolved", 0),
+                          "to_correct": land.get("correct", 0), "still_mis": land.get("mis", 0),
+                          "next_offenders": dict(still.most_common(20))}}
+    if out_path:
+        Path(out_path).write_text(json.dumps(report, ensure_ascii=False, indent=1),
+                                  encoding="utf-8")
+        print(f"\nwrote drop-ref report -> {out_path}")
+
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a", encoding="utf-8") as fh:
+            fh.write(f"### drop-ref experiment (measure-only)\n"
+                     f"- dropped catalog ref: **{', '.join(drop_bases)}**\n"
+                     f"- correct {c0}→{c1} (**{c1-c0:+d}**) / mis {m0}→{m1} "
+                     f"(**{m1-m0:+d}**) / '?' {u0}→{u1} ({u1-u0:+d})\n"
+                     + "".join(f"- COST genuine {b}: {cost[b]['n']} labels, "
+                              f"lost_correct **{cost[b]['lost_correct']}**\n" for b in drop_bases)
+                     + f"- BENEFIT: {len(stolen)} stolen → '?' {land.get('unresolved',0)}, "
+                       f"correct {land.get('correct',0)}, still-mis {land.get('mis',0)}\n")
+    return report
+
+
 def full_retrim(labels, claimed, bar, out, dry_run, ja, min_consensus=3):
     """FULL re-trim: baseline = catalog refs ONLY; EVERY current learned_seed
     cluster (new or long-shipped) is a removal candidate. Drops any cluster that
@@ -307,10 +405,14 @@ def main() -> None:
     ap.add_argument("--min-consensus", type=int, default=3,
                     help="offender ranking: a victim label must have >= this many agreeing "
                          "same-base captures to count (down-weights lone bad labels)")
+    ap.add_argument("--drop-ref", action="append", default=[], metavar="BASE",
+                    help="MEASURE-ONLY: report Δmis/Δcorrect if this catalog ref were dropped "
+                         "(keeps seed clusters). Repeatable. Never writes.")
     ap.add_argument("--dry-run", action="store_true", help="measure only; do not write")
     args = ap.parse_args()
-    if not args.full and not (args.baseline and args.candidate and args.out):
-        ap.error("per-batch mode needs --baseline, --candidate and --out (or use --full)")
+    if not args.drop_ref and not args.full and not (args.baseline and args.candidate and args.out):
+        ap.error("per-batch mode needs --baseline, --candidate and --out "
+                 "(or use --full, or --drop-ref)")
     if args.full and not args.dry_run and not args.out:
         ap.error("--full write mode needs --out (or add --dry-run to only measure)")
 
@@ -338,6 +440,11 @@ def main() -> None:
     L = len(labels)
     print(f"fetched {len(rows)} rows -> {L} valid catalog labels")
     claimed = np.array([b for b, _ in labels], dtype=object)
+
+    if args.drop_ref:
+        drop_ref_experiment(labels, claimed, args.drop_ref, args.bar, ja,
+                            out_path="drop_ref_report.json")
+        return
 
     if args.full:
         full_retrim(labels, claimed, args.bar, args.out, args.dry_run, ja,

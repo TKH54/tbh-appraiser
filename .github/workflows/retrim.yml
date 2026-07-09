@@ -47,6 +47,15 @@ jobs:
               --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
           fi
 
+      - name: Coin drop-ref experiment (measure-only)
+        if: github.event.inputs.apply != 'true'
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python scripts/trim_offenders.py \
+            --drop-ref "Kingdom 10th Anniversary Coin" \
+            --bar "${{ github.event.inputs.bar || '0.075' }}" | tee -a /tmp/retrim.log
+
       - name: Upload offender report (catalog-offender ranking)
         if: always()
         uses: actions/upload-artifact@v4
@@ -54,6 +63,7 @@ jobs:
           name: offender-report
           path: |
             offender_report.json
+            drop_ref_report.json
             /tmp/retrim.log
           if-no-files-found: warn
 
