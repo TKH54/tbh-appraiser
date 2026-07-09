@@ -135,6 +135,15 @@ def full_retrim(labels, claimed, bar, out, dry_run, ja):
     for b in lost_items[:30]:
         print(f"    - {f(b)}")
 
+    # attribute the dropped offender clusters to their promotion batch, so a single
+    # bad batch can be surgically rolled back (rollback_batch.py --batch <id>)
+    # instead of paying the whole-seed coverage cost above.
+    drop_batches = Counter(str(cand_raw[cols[k]].get("batch", "(untagged)")) for k in removed)
+    if drop_batches:
+        print("  削除クラスタの由来バッチ（ロールバック候補・多い順）:")
+        for b, n in drop_batches.most_common(15):
+            print(f"    - batch {b}: {n} クラスタ")
+
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
         with open(summ, "a", encoding="utf-8") as fh:
@@ -142,7 +151,9 @@ def full_retrim(labels, claimed, bar, out, dry_run, ja):
                      f"- clusters {N} → kept {N - len(removed)} (dropped {len(removed)})\n"
                      f"- 認識(正解) {c0} → {c1} (**{c1 - c0:+d}** = coverage cost)\n"
                      f"- 誤爆 {m0} → {m1} ({m1 - m0:+d}; residual = catalog-caused)\n"
-                     f"- 認識できなくなるアイテム種: **{len(lost_items)}**\n")
+                     f"- 認識できなくなるアイテム種: **{len(lost_items)}**\n"
+                     + ("- 削除バッチ: " + ", ".join(f"`{b}`×{n}" for b, n in drop_batches.most_common(10)) + "\n"
+                        if drop_batches else ""))
 
     if not dry_run:
         drop = {cols[k] for k in removed}

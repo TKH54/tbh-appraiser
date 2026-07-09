@@ -1,0 +1,87 @@
+name: Roll back a promotion batch
+
+# Surgically undo ONE auto-merged crowd-label promotion batch by its batch id (=
+# the GitHub run id promote_labels.py tagged each entry with). Unlike the full
+# re-trim this costs no coverage beyond that one batch. Find the id from the
+# promotion run, the --full re-trim's batch attribution, or the Discord ping.
+# dry_run=true only reports; otherwise it opens a PR that removes the entries.
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "batch id to roll back (the promotion run's id)"
+        required: true
+      dry_run:
+        description: "true = report only (no PR)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rollback
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Remove the batch from learned_seed.json
+        id: rb
+        run: |
+          python scripts/rollback_batch.py --batch "${{ github.event.inputs.batch }}" \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} | tee /tmp/rb.log
+
+      - name: Bump release
+        if: github.event.inputs.dry_run != 'true' && steps.rb.outputs.removed != '0' && steps.rb.outputs.removed != ''
+        run: python scripts/bump_release.py
+
+      - name: Open rollback PR
+        id: cpr
+        if: github.event.inputs.dry_run != 'true' && steps.rb.outputs.removed != '0' && steps.rb.outputs.removed != ''
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          add-paths: |
+            data/learned_seed.json
+            js/app.js
+            js/detect.js
+            js/pipeline.js
+            js/i18n.js
+            js/recognize.js
+            index.html
+          branch: rollback/batch-${{ github.event.inputs.batch }}
+          delete-branch: true
+          commit-message: "Roll back promotion batch ${{ github.event.inputs.batch }}"
+          title: "Roll back promotion batch ${{ github.event.inputs.batch }} (${{ steps.rb.outputs.removed }} entries)"
+          body: |
+            Surgically removes the **${{ steps.rb.outputs.removed }}** learned_seed entries tagged batch `${{ github.event.inputs.batch }}` (remaining: ${{ steps.rb.outputs.remaining }}). No coverage cost beyond this batch. Bumps the version so returning visitors refetch.
+          labels: crowd-labels
+
+      - name: Notify Discord — done
+        if: steps.rb.outcome == 'success'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          jq -n --arg c "↩️ **バッチ ${{ github.event.inputs.batch }} をロールバック**：${{ steps.rb.outputs.removed }}件削除（残り ${{ steps.rb.outputs.remaining }}）。${{ github.event.inputs.dry_run == 'true' && '（dry-run・PRなし）' || 'PR作成済み、マージで反映' }} → $RUN_URL" '{content:$c}' \
+            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+
+      - name: Notify Discord — failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK" ] && exit 0
+          jq -n --arg c "❌ **バッチロールバックが失敗**（batch ${{ github.event.inputs.batch }} — 見つからない/エラー）→ $RUN_URL" '{content:$c}' \
+            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
