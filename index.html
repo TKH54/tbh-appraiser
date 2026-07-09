@@ -110,6 +110,11 @@
   #banner.base { background:#2b2347; border:1px solid #5a4a80; color:#d6c6ff; }
   #banner.cur  { background:#1b2a1e; border:1px solid #2ea043; color:#aff5b4; }
   #banner a { color:#fff; }
+  #staleAlert { margin:0 0 .3rem; padding:.6rem .9rem; border-radius:.6rem; font-size:.82rem;
+    line-height:1.55; background:#3a2e12; border:1px solid #b8860b; color:#ffe08a; }
+  #staleAlert a { color:#fff; text-decoration:underline; white-space:nowrap; }
+  #staleAlert .x { float:right; cursor:pointer; color:#ffe08a; font-weight:700; margin-left:.6rem; opacity:.8; }
+  #staleAlert .x:hover { opacity:1; }
 
   /* ⓘ help marker with an INSTANT custom tooltip (native title is delayed) */
   .info { position:relative; display:inline-block; margin-left:.2rem; cursor:help;
@@ -349,6 +354,9 @@
 </style>
 </head>
 <body>
+  <!-- stale-price alert: shown by app.js when data/prices.json stops advancing
+       (usually a GitHub Actions/Pages delay, not a tool bug). Client-side only. -->
+  <div id="staleAlert" style="display:none;"></div>
   <div class="topbar">
     <div>
       <h1 id="tTitle">TBH 倉庫まるごと査定</h1>
@@ -507,7 +515,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260703f"></script>
+<script type="module" src="js/app.js?v20260709a"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
