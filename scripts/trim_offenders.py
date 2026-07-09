@@ -25,13 +25,17 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 
-from promote_labels import DATA, DEFAULT_URL, fetch_rows, unpack, unpack_sig
+from promote_labels import (CONSENSUS_DIST, DATA, DEDUP_DIST, DEFAULT_URL,
+                            fetch_rows, unpack, unpack_sig)
 from seed_regression import classify, load_refs, load_seed, resolve_all, stack
+
+TWIN_MAX_VICTIMS = 2   # an offender stealing <= this many distinct items = a "twin" (surgical guard);
+                       # more = a "broad-attractor" (a bad/generic ref that needs re-extraction)
 
 
 def new_entry_dists(labels, NV, NM, bar):
@@ -53,7 +57,127 @@ def new_entry_dists(labels, NV, NM, bar):
     return D
 
 
-def full_retrim(labels, claimed, bar, out, dry_run, ja):
+def _consensus_counts(labels, victim_by_base):
+    """For each victim label, count how many DISTINCT same-claimed-base labels
+    corroborate it — masked colour-MSE inside (DEDUP_DIST, CONSENSUS_DIST). The
+    lower band excludes exact re-submissions of one capture (same-source dupes
+    that would fake a crowd); the upper band keeps only labels close enough to be
+    the same item under varied captures. A victim with few corroborators is a
+    likely LONE MIS-NAME (one user typed the wrong item) and must not drive the
+    offender ranking — refinement (3): "down-weight low-consensus victim labels".
+    Caveat: labels are anonymous, so a single user submitting several genuinely
+    different captures still counts; the band only kills identical dupes."""
+    idx_by_base = defaultdict(list)
+    for i, (b, _) in enumerate(labels):
+        idx_by_base[b].append(i)
+    counts = {}
+    for b, vlist in victim_by_base.items():
+        grp = idx_by_base[b]
+        if len(grp) <= 1:
+            for vi in vlist:
+                counts[vi] = 0
+            continue
+        GV = np.stack([labels[gi][1][0].reshape(1024, 3) for gi in grp]).astype(np.float32)
+        GM = np.stack([labels[gi][1][1].astype(bool) for gi in grp])
+        pos = {gi: k for k, gi in enumerate(grp)}
+        for vi in vlist:
+            va, ma = labels[vi][1]
+            keep = GM | ma.astype(bool)                  # (G,1024)
+            cnt = keep.sum(1)
+            diff = GV - va.reshape(1024, 3)
+            per = np.einsum("ijk,ijk->ij", diff, diff)
+            s = (per * keep).sum(1)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mse = s / (cnt * 3)
+            mse[cnt < 60] = 1e9
+            mse[pos[vi]] = 1e9                            # exclude self
+            counts[vi] = int(((mse > DEDUP_DIST) & (mse < CONSENSUS_DIST)).sum())
+    return counts
+
+
+def catalog_offender_report(labels, claimed, cat_is_mis, cat_resolved, ja,
+                            min_consensus, out_path=None):
+    """Rank CATALOG ref bases by how many crowd labels they wrongly STEAL — the
+    confident mis-IDs that persist under ANY seed removal (~the bigger lever vs
+    seed-caused mis). For each label the catalog alone confidently mis-IDs, the
+    OFFENDER = the catalog base it resolved to, the VICTIM = the base the user
+    assigned. Refinements: (1) per-offender victim breakdown -> twin vs
+    broad-attractor; (2) a per-type fix hint; (3) only HIGH-CONSENSUS victims
+    (>= min_consensus corroborating same-base labels) drive the ranking so lone
+    bad labels don't pollute it. Read-only measurement — nothing is written to
+    the seed."""
+    L = len(labels)
+    victim_idx = [i for i in range(L) if cat_is_mis[i]]
+    victim_by_base = defaultdict(list)
+    for i in victim_idx:
+        victim_by_base[claimed[i]].append(i)
+    cons = _consensus_counts(labels, victim_by_base)
+    # high-consensus victim = the wrong label is corroborated by >= min_consensus-1
+    # OTHER same-base captures (so >= min_consensus agreeing in total).
+    hc = [i for i in victim_idx if cons.get(i, 0) >= max(min_consensus - 1, 0)]
+
+    off_raw = Counter(cat_resolved[i] for i in victim_idx)
+    off_hc = Counter(cat_resolved[i] for i in hc)
+    victims_by_off = defaultdict(Counter)                # offender -> {victim base: hc count}
+    for i in hc:
+        victims_by_off[cat_resolved[i]][claimed[i]] += 1
+
+    def f(b):
+        return f"{b}（{ja[b]}）" if ja.get(b) else b
+
+    ranking = []
+    for off, n_hc in off_hc.most_common():
+        vic = victims_by_off[off]
+        n_victims = len(vic)
+        kind = "twin" if n_victims <= TWIN_MAX_VICTIMS else "broad-attractor"
+        fix = ("曖昧ガード/マスクで該当ラベルを?へ（正解を潰さない）" if kind == "twin"
+               else "参照refを綺麗に再抽出（汎用的すぎる犯人ref）")
+        ranking.append({
+            "offender": off, "offender_ja": ja.get(off),
+            "steals_hc": n_hc, "steals_raw": off_raw[off],
+            "n_victims": n_victims, "kind": kind, "fix": fix,
+            "victims": [{"base": vb, "base_ja": ja.get(vb), "count": c}
+                        for vb, c in vic.most_common()],
+        })
+
+    print(f"\n================ CATALOG-OFFENDER RANKING (measure-only) ================")
+    print(f"  カタログ由来の確信誤爆: {len(victim_idx)} ラベル "
+          f"（高信頼victimのみ {len(hc)}、min_consensus={min_consensus}）")
+    print(f"  ※これらはシード削除では消えない（犯人はカタログref自体）。"
+          f"twin→曖昧ガード / broad-attractor→ref再抽出。")
+    print(f"  {'#':>3} {'steals(hc/raw)':>16} {'victims':>8} {'type':<16} offender")
+    for r, e in enumerate(ranking[:30], 1):
+        print(f"  {r:>3} {str(e['steals_hc'])+'/'+str(e['steals_raw']):>16} "
+              f"{e['n_victims']:>8} {e['kind']:<16} {f(e['offender'])}")
+        top_v = "  ".join(f"{f(v['base'])}×{v['count']}" for v in e["victims"][:6])
+        print(f"        └ victims: {top_v}" + (" …" if e["n_victims"] > 6 else ""))
+        print(f"          fix: {e['fix']}")
+
+    if out_path:
+        Path(out_path).write_text(
+            json.dumps({"min_consensus": min_consensus,
+                        "catalog_mis_raw": len(victim_idx),
+                        "catalog_mis_hc": len(hc),
+                        "ranking": ranking}, ensure_ascii=False, indent=1),
+            encoding="utf-8")
+        print(f"\nwrote offender report -> {out_path} ({len(ranking)} offenders)")
+
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a", encoding="utf-8") as fh:
+            fh.write(f"### catalog-offender ranking (measure-only)\n"
+                     f"- catalog-caused confident mis: **{len(victim_idx)}** "
+                     f"labels ({len(hc)} high-consensus, min_consensus={min_consensus})\n"
+                     f"- these persist under any seed removal (offender = a catalog ref)\n\n"
+                     f"| # | steals hc/raw | victims | type | offender |\n"
+                     f"|--:|--:|--:|:--|:--|\n")
+            for r, e in enumerate(ranking[:30], 1):
+                fh.write(f"| {r} | {e['steals_hc']}/{e['steals_raw']} | "
+                         f"{e['n_victims']} | {e['kind']} | {f(e['offender'])} |\n")
+    return ranking
+
+
+def full_retrim(labels, claimed, bar, out, dry_run, ja, min_consensus=3):
     """FULL re-trim: baseline = catalog refs ONLY; EVERY current learned_seed
     cluster (new or long-shipped) is a removal candidate. Drops any cluster that
     is the nearest-and-WRONG ref for a label the catalog alone did not already
@@ -155,6 +279,10 @@ def full_retrim(labels, claimed, bar, out, dry_run, ja):
                      + ("- 削除バッチ: " + ", ".join(f"`{b}`×{n}" for b, n in drop_batches.most_common(10)) + "\n"
                         if drop_batches else ""))
 
+    # Catalog-offender ranking (measure-only; the bigger, seed-removal-proof lever).
+    catalog_offender_report(labels, claimed, cat_is_mis, cat_resolved, ja,
+                            min_consensus, out_path="offender_report.json")
+
     if not dry_run:
         drop = {cols[k] for k in removed}
         Path(out).write_text(
@@ -174,7 +302,11 @@ def main() -> None:
     ap.add_argument("--manifest", help="review_manifest.json to prune to survivors (optional)")
     ap.add_argument("--full", action="store_true",
                     help="FULL re-trim: every current learned_seed cluster is a removal "
-                         "candidate (baseline = catalog only). Reports coverage cost.")
+                         "candidate (baseline = catalog only). Reports coverage cost + "
+                         "the catalog-offender ranking (measure-only).")
+    ap.add_argument("--min-consensus", type=int, default=3,
+                    help="offender ranking: a victim label must have >= this many agreeing "
+                         "same-base captures to count (down-weights lone bad labels)")
     ap.add_argument("--dry-run", action="store_true", help="measure only; do not write")
     args = ap.parse_args()
     if not args.full and not (args.baseline and args.candidate and args.out):
@@ -208,7 +340,8 @@ def main() -> None:
     claimed = np.array([b for b, _ in labels], dtype=object)
 
     if args.full:
-        full_retrim(labels, claimed, args.bar, args.out, args.dry_run, ja)
+        full_retrim(labels, claimed, args.bar, args.out, args.dry_run, ja,
+                    args.min_consensus)
         return
 
     catalog = load_refs()

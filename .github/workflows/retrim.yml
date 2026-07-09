@@ -47,6 +47,16 @@ jobs:
               --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
           fi
 
+      - name: Upload offender report (catalog-offender ranking)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offender-report
+          path: |
+            offender_report.json
+            /tmp/retrim.log
+          if-no-files-found: warn
+
       - name: Bump release (apply only)
         if: github.event.inputs.apply == 'true'
         run: python scripts/bump_release.py
