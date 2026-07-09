@@ -1,14 +1,13 @@
 name: Promote crowd labels (PR only)
 
-# Reads crowd-sourced recognition labels from Supabase (service_role secret),
-# runs the anti-poisoning gates (consensus K=3 + conflict + redundancy +
-# already-seeded), and — if anything survives — opens a PULL REQUEST that adds
-# the survivors to data/learned_seed.json. It NEVER pushes to main: a human
-# reviews and merges. Each promoted label gets a VISUAL review montage
-# (catalog ref vs crowd label, mask-applied + nearest-neighbour check) rendered
-# to the dedicated `review-assets` branch and embedded inline in the PR; loose
-# matches / wrong-nearest get a ⚠ flag in the PR title. Trigger manually
-# (Actions tab -> Run workflow); the weekly cron is best-effort only.
+# Reads crowd-sourced recognition labels from Supabase (service_role secret) and
+# runs the anti-poisoning gates (consensus K + conflict + redundancy + already-seeded),
+# then splits survivors into SAFE (unambiguous: the nearest catalog ref IS the promoted
+# item, no different-named look-alike label sits near it, and risk-based K/time-dispersion
+# hold) vs QUARANTINE (held for more consensus / manual review). Only Safe is promoted;
+# it is offender-trimmed to ZERO new mis-IDs, montage-reviewed, and opened as a PR.
+# With the auto_merge input the Safe PR is merged automatically (Quarantine is NEVER
+# auto-merged). Trigger manually (Actions tab) or via the weekly cron (best-effort).
 
 on:
   workflow_dispatch:
@@ -16,6 +15,10 @@ on:
       k:
         description: "min distinct agreeing submissions to promote"
         default: "3"
+      auto_merge:
+        description: "auto-merge the Safe PR (Quarantine is always held for review)"
+        type: boolean
+        default: false
   schedule:
     - cron: "17 3 * * 1"   # Mondays ~03:17 UTC, best-effort
 
@@ -42,7 +45,7 @@ jobs:
         id: promote
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" | tee /tmp/promote.log
+        run: python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" --safe-only | tee /tmp/promote.log
 
       # Drop every NEW cluster that creates a confident WRONG id (any item, any
       # price), iterating until the batch adds ZERO new mis-IDs. Enforces the
@@ -113,6 +116,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Open PR if learned_seed.json changed
+        id: cpr
         if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
         uses: peter-evans/create-pull-request@v6
         with:
@@ -127,7 +131,21 @@ jobs:
             index.html
           branch: crowd-labels/auto-promote
           delete-branch: true
-          commit-message: "Promote crowd labels (offender-trimmed: zero new mis-IDs)"
-          title: "${{ steps.review.outputs.has_flags == 'true' && '⚠ Crowd labels (offender-trimmed, 0 new mis-IDs): review montages' || 'Crowd labels (offender-trimmed: zero new mis-IDs)' }}"
+          commit-message: "Promote crowd labels (Safe only; offender-trimmed: zero new mis-IDs)"
+          title: "${{ steps.review.outputs.has_flags == 'true' && '⚠ Crowd labels (Safe, 0 new mis-IDs): review montages' || 'Crowd labels (Safe, offender-trimmed: zero new mis-IDs)' }}"
           body: ${{ env.PR_BODY }}
           labels: crowd-labels
+
+      # Auto-merge ONLY the Safe PR, and ONLY when explicitly asked (auto_merge input).
+      # Quarantine never reaches here (promote --safe-only holds it). The job already
+      # failed if trim left any new mis-ID, so reaching this step means mis-delta <= 0.
+      - name: Auto-merge the Safe PR
+        if: >-
+          github.event.inputs.auto_merge == 'true'
+          && steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
+          && steps.cpr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "auto-merging Safe PR #${{ steps.cpr.outputs.pull-request-number }} (quarantine held: ${{ steps.promote.outputs.quarantine }})"
+          gh pr merge "${{ steps.cpr.outputs.pull-request-number }}" --merge --repo "$GITHUB_REPOSITORY"
