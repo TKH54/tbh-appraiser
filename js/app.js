@@ -27,8 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.8";
+const APP_VERSION = "1.7.9";
 const CHANGELOG = [
+  { v: "1.7.9", d: "2026/7/9",
+    ja: "「一番のお宝」に薄商い（価格が当てにならない）銘柄が選ばれないよう修正。",
+    en: "The “top find” spotlight now skips thin-market items whose price is unreliable." },
   { v: "1.7.7", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄に「薄商い」表示を追加。",
     en: "Flag illiquid items whose price is unreliable as “Thin market.”" },
@@ -901,7 +904,10 @@ function animateTotal(to) {
 // framed in the colour of its price band
 function renderTopFind(rows) {
   const tf = $("topFind");
-  const best = rows.filter(r => r.unit != null).sort((a, b) => b.unit - a.unit)[0];
+  // skip thin-market items: their shown price is an unreliable stale-lm ghost
+  // (badged 薄商い in the table), so they must not be spotlighted as the top find.
+  const best = rows.filter(r => r.unit != null && !(MODE !== "base" && priceThin(DATA.prices?.items?.[r.hash])))
+                   .sort((a, b) => b.unit - a.unit)[0];
   if (!best || best.unit < 500) { tf.style.display = "none"; return; }
   const band = +bandClass(best.unit).slice(1);
   const bc = BAND_BORDER[band];
