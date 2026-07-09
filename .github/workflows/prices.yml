@@ -98,11 +98,16 @@ jobs:
           done
           echo "::error::push failed 3 times"; exit 1
 
-      - name: Notify Discord on failure
-        if: failure()
+      # Alert on CANCELLED too, not just failed: a GitHub-side cancellation (runner
+      # lost / Actions outage / concurrency) skips the push AND a failure()-only
+      # alert -> the chain dies SILENTLY (exactly what happened 2026-07-09). Firing
+      # on cancelled() surfaces it so the chain can be re-fired. Best-effort: a hard
+      # runner kill may not run this step, but soft cancels/failures will.
+      - name: Notify Discord on failure/cancel
+        if: failure() || cancelled()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          jq -n --arg c "❌ **価格スナップショットCIが失敗**。価格の自動更新チェーンが停止した可能性（価格が固まる）。再開が必要かも → $RUN_URL" '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+          jq -n --arg c "⚠️ **価格スナップショットCIが失敗/キャンセル**。自動更新チェーンが止まった可能性（価格が固まる）。GitHub Actions障害時によく起きます。復旧後に \`gh workflow run prices.yml\` で再点火 → $RUN_URL" '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
