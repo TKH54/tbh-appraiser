@@ -35,6 +35,7 @@ ja: {
   mode_base_tip_post: "売り規制前（6/2〜6/8）にSteamで実際に売れた価格の平均。現在の実勢との比較用の参考値です。",
   banner_base_post: "🕒 規制前（6/2〜6/8）の平均販売価格（参考値）。実際に売れる相場は『現在価格』で確認してください。",
   banner_cur_post: (t) => `💰 現在価格で表示中（${t} 時点）。売り解禁後の実勢相場です。解禁直後は変動が大きい場合があります。`,
+  // During Steam/GitHub-IP throttling, don't promise automatic recovery; tell users we are investigating.
   stale_alert: (m) => `⚠️ 価格データの更新が約${m}分止まっています。これはツールの不具合ではなく、価格の自動更新（外部データの取得・配信）が一時的に遅延しているためです。解決案を模索中です。しばらくお待ちください。`,
   stale_status: "GitHubの稼働状況を確認",
   stale_dismiss: "閉じる",
