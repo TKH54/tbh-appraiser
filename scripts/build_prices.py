@@ -32,7 +32,17 @@ S.headers.update({"User-Agent": "tbh-appraiser-price-snapshot/1.0 (polite; 1 req
 # (Azure) IP range, so this bot must be a POLITE, self-throttling tenant. State
 # persisted in price_state.json drives a cross-run cooldown; see _gate()/_on_failure().
 STATE = Path(__file__).resolve().parent.parent / "data" / "price_state.json"
-MODE_MARKER = "/tmp/build_mode"          # commit step reads this: snapshot|stateonly|skip
+MODE_MARKER = os.environ.get("BUILD_MODE_FILE") or "/tmp/build_mode"
+#                                          commit step reads this: snapshot|stateonly|skip
+#                                          (env override for local runners: Termux has no /tmp)
+SOURCE = os.environ.get("PRICES_SOURCE") or "ci"
+#                                          who produced this snapshot: "ci" (GitHub Actions,
+#                                          Steam-blocked IP range) or "local" (a residential-IP
+#                                          runner: the phone/PC — see scripts/phone_runner.sh).
+#                                          Written into prices.json as `src`; _gate() makes CI
+#                                          STAND DOWN while local snapshots are fresh.
+LOCAL_FRESH_SEC = 1200                   # local runner is "delivering" if t is younger than
+#                                          this (2x its 10-min cadence); older -> CI takes over
 PACE_SEC = 180                           # push-chain startup pacing -> ~10-min cadence
 HEARTBEAT_SLEEP = 540                    # during cooldown: nap this long then re-fire the
 #                                          chain WITHOUT hitting Steam (GitHub's cron does
@@ -323,6 +333,7 @@ def fetch_fx() -> dict:
 def write_snapshot(items, rate, unlocked, eoff, fx) -> None:
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "src": SOURCE,                     # ci|local — _gate() reads this to stand down
         "rate": rate,
         "unlocked": unlocked,
         "_eoff": eoff,                     # rotating enrich offset (persisted)
@@ -359,19 +370,23 @@ def _set_mode(mode: str) -> None:
         pass
 
 
-def _prev_t_epoch():
-    """Epoch seconds of the last snapshot's `t`, or None."""
+def _prev_snapshot_meta():
+    """(epoch seconds of the last snapshot's `t` or None, its `src` or "ci")."""
     try:
-        t = json.loads(OUT.read_text(encoding="utf-8")).get("t")
-        return datetime.fromisoformat(t).timestamp() if t else None
+        doc = json.loads(OUT.read_text(encoding="utf-8"))
+        t = doc.get("t")
+        return (datetime.fromisoformat(t).timestamp() if t else None,
+                doc.get("src") or "ci")
     except Exception:
-        return None
+        return None, "ci"
 
 
 def _gate() -> str:
     """Decide what to do this run: "proceed" | "heartbeat" | "skip".
 
     Steam is hit ONLY on "proceed". workflow_dispatch always proceeds (manual). Else:
+      - a LOCAL runner's snapshot is fresh (src=local) -> standby heartbeat: CI never
+        touches Steam while a residential-IP runner is the primary source;
       - inside a persisted cooldown -> nap briefly, then "heartbeat": a state-only
         commit that RE-FIRES the chain WITHOUT hitting Steam. GitHub's cron does not
         fire reliably on this push-busy repo, so the chain must restart ITSELF; the
@@ -384,6 +399,20 @@ def _gate() -> str:
     if event == "workflow_dispatch":
         return "proceed"
     now = time.time()
+    # LOCAL-PRIMARY standby: a residential-IP runner (src=local, e.g. the phone via
+    # scripts/phone_runner.sh) is delivering fresh snapshots — Steam serves homes fine
+    # but blocks the shared Actions IPs, so CI stands down COMPLETELY (no Steam, no
+    # snapshot) and just heartbeats to keep the self-restarting chain breathing. The
+    # moment the local runner dies, `t` ages past LOCAL_FRESH_SEC and the next chain
+    # run falls through to the normal proceed path = automatic CI fallback. The nap
+    # paces the standby loop so heartbeat commits stay ~10 min apart, and the NEXT
+    # run (fresh checkout) re-evaluates against the local runner's latest push.
+    pt, src = _prev_snapshot_meta()
+    if src == "local" and pt is not None and (now - pt) < LOCAL_FRESH_SEC:
+        print(f"gate: local runner delivering (t {int((now - pt) / 60)}min old) "
+              f"-> CI standby, heartbeat after {HEARTBEAT_SLEEP}s nap", file=sys.stderr)
+        time.sleep(HEARTBEAT_SLEEP)
+        return "heartbeat"
     cd = float(_load_state().get("cooldown_until", 0) or 0)
     if now < cd:
         nap = min(cd - now, HEARTBEAT_SLEEP)
@@ -394,7 +423,6 @@ def _gate() -> str:
             return "heartbeat"          # still cooling -> re-fire, don't touch Steam
         return "proceed"                # cooldown ended during the nap -> retry Steam now
     if event == "schedule":
-        pt = _prev_t_epoch()
         if pt is not None and (now - pt) < HEALTHY_T_SEC:
             print(f"gate: chain healthy (t {int((now - pt) / 60)}min old) -> skip cron",
                   file=sys.stderr)
