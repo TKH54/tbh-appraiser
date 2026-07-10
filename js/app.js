@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626o";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626o";
-import { detectPageTab } from "./detect.js?v20260626o";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626o";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709c";
+import { Matcher, _internal } from "./recognize.js?v20260626p";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626p";
+import { detectPageTab } from "./detect.js?v20260626p";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626p";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709d";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,11 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.13";
+const APP_VERSION = "1.7.14";
 const CHANGELOG = [
   { v: "1.7.13", d: "2026/7/10",
-    ja: "開きっぱなしのタブでも価格が自動で最新に更新されるようになりました（約2分ごとに新しい価格を確認）。「価格を更新」ボタンを押す必要はもうありません。",
-    en: "Prices now auto-refresh in a tab left open (checked every ~2 min) — no need to press “Refresh prices” anymore." },
+    ja: "開きっぱなしのタブでも価格が自動で最新に更新されるようになりました（約2分ごとに新しい価格を確認）。",
+    en: "Prices now auto-refresh in a tab left open (checked every ~2 min)." },
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
     en: "Improved handling of thinly-traded (“thin market”) items with unreliable prices." },
@@ -219,12 +219,6 @@ function countUpNum(el, dur = 600) {
 function animatePriceCells() {
   document.querySelectorAll("#rows td.num1 > span:first-child, #rows td > span.num, #gRows td > span:first-child")
     .forEach(el => countUpNum(el));
-}
-async function refreshPricesAndRender(btn) {
-  const lbl = btn ? btn.textContent : null;
-  if (btn) { btn.disabled = true; btn.textContent = (lbl || "") + " …"; }
-  try { await refreshPrices(); applyMode(); window._lastTotal = 0; renderAll(); animatePriceCells(); checkStale(); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = lbl; } }
 }
 async function refreshPrices() {
   try {
@@ -1286,10 +1280,6 @@ function applyLang() {
   set("chTitle", "chlog_title");
   renderChangelog();
   $("tPriceRefresh").textContent = t("price_refresh");
-  for (const _id of ["priceRefreshG", "priceRefreshR"]) {
-    const _b = $(_id);
-    if (_b) { _b.textContent = t("price_refresh_btn"); _b.onclick = () => refreshPricesAndRender(_b); }
-  }
   set("tPrivacy", "privacy"); set("tUnofficial", "unofficial");
   set("popTitle", "pop_title"); set("popRarLbl", "pop_rar");
   set("learnNote", "learn_note");
