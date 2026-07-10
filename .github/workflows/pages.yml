@@ -17,6 +17,8 @@ on:
   push:
     branches: [main]        # every push (incl. the price-bot SSH deploy-key
                             # pushes, which DO fire push events) redeploys
+    paths-ignore:
+      - data/price_state.json   # cooldown-state-only commits don't change the site
   workflow_dispatch:        # manual redeploy / first deploy after the switch
 permissions:
   contents: read

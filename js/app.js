@@ -240,7 +240,9 @@ async function refreshPrices() {
 // service (CI stays green while Steam throttles, so "GitHub outage" was misleading).
 // Purely client-side (no network, CSP-safe), so it still fires even when the site
 // itself is served stale from the CDN cache during an outage.
-const STALE_MIN = 30;               // minutes since last snapshot -> show the alert
+const STALE_MIN = 40;               // minutes since last snapshot -> show the alert
+//   (the price bot runs a ~10-min polite chain; 40 min = a few missed cycles, so the
+//   banner flags a real stall rather than false-alarming on normal cadence jitter)
 let _staleDismissed = false;
 function checkStale() {
   const el = $("staleAlert");

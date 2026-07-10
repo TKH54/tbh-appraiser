@@ -1,27 +1,33 @@
-# Self-chaining price refresh (near-real-time prices, no PC needed). Each run:
-#   1. FAST: sweep EVERY item's lowest ask + listing count (~1-2 min) and write
-#      prices.json — so the displayed `t` advances every cycle.
-#   2. DETAIL: refresh median + 24h volume for a small rotating shard
-#      (PRICES_SHARD, default 60) — the whole catalog cycles every ~1h.
-# It then COMMITS VIA THE DEPLOY KEY (SSH). Unlike GITHUB_TOKEN pushes, deploy-key
-# pushes fire `push` events, so every snapshot triggers the next run — a
-# continuous ~10-min loop hosted entirely on GitHub. A run normally finishes in
-# ~5-7 min (well under timeout-minutes); the cron is a best-effort RESTARTER if a
-# run ever fails to push.
+# POLITE price refresh (near-real-time prices, no PC needed). Steam blocks the shared
+# GitHub Actions IP range, so this bot self-throttles rather than hammering. Each run:
+#   1. FAST: sweep EVERY item's lowest ask + listing count and write prices.json —
+#      so the displayed `t` advances (~10-min healthy cadence).
+#   2. DETAIL: refresh median + 24h volume for a small rotating shard (PRICES_SHARD,
+#      default 25) — the whole catalog cycles over a few hours.
+#
+# Cadence model (see scripts/build_prices.py _gate/_on_failure):
+#   - SUCCESS commits prices.json via the DEPLOY KEY (SSH). deploy-key pushes fire
+#     `push` events, so each snapshot paces ~3 min then fires the next run — a ~10-min
+#     chain, independent of GitHub's flaky cron scheduler.
+#   - FAILURE (Steam unreachable) commits price_state.json ONLY. `paths-ignore` keeps
+#     that from firing a run, so the chain STOPS instead of hammering; an escalating
+#     cooldown (20->40->80->120 min) is persisted there.
+#   - The cron is a RESTARTER: it skips while the chain is alive (recent `t`) or while
+#     a cooldown is active, and only revives a genuinely dead chain.
 #
 # Stop the chain: Actions tab -> price-snapshot -> "..." -> Disable workflow.
-# Restart it:     enable + Run workflow (leave inputs empty).
+# Force a run now: Run workflow (bypasses cooldown/pacing).
 # One-shot full median/volume backfill: Run workflow with shard=742 delay=3.0.
 name: price-snapshot
 on:
   push:
-    branches: [main]              # the chain link: every bot (deploy-key) push fires the
-                                  # next run; human pushes just splice into the same chain
+    branches: [main]
+    paths-ignore:
+      - data/price_state.json     # cooldown-state-only commits must NOT re-fire the chain
   schedule:
-    - cron: "1,11,21,31,41,51 * * * *"   # best-effort restarter: every 10 min so a
-                                         # broken chain self-heals fast. Harmless when
-                                         # healthy — concurrency folds it into the chain.
-  workflow_dispatch:              # manual run / chain starter
+    - cron: "*/10 * * * *"        # RESTARTER only: revives a dead chain. Gated in
+                                  # build_prices.py so it never races the healthy chain.
+  workflow_dispatch:              # manual run / chain starter (bypasses the gate)
     inputs:
       force_unlocked:
         description: "market-reopened flag: 1=force on, 0=force off, empty=auto-detect"
@@ -58,41 +64,52 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install requests
-      - name: pace the loop (~10-min cadence; immediate on manual dispatch)
-        # build is ~5-7 min; this short pace brings the cycle to ~7-9 min without
-        # the old 9-min idle that made each run overshoot 10 min.
-        if: github.event_name != 'workflow_dispatch'
-        run: sleep 120
-      - name: snapshot prices (failure must not break the chain)
-        # PHASE 1 sweeps EVERY item's lowest ask/listing and writes prices.json
-        # fast; PHASE 2 refreshes a rotating shard's median/volume (PRICES_SHARD).
-        # Progress (items/offset/refreshed/elapsed) is logged to stderr.
-        run: python scripts/build_prices.py || echo "::warning::price build failed; sending keepalive"
+      - name: snapshot prices (self-throttling; failures cool down, never hammer)
+        # build_prices.py gates itself (cooldown / cron-vs-chain / ~3-min push pacing),
+        # sweeps EVERY item's lowest ask (PHASE 1) and refreshes a rotating median/
+        # volume shard (PHASE 2). It ALWAYS exits 0: on a Steam block it records a
+        # cooldown in price_state.json instead of failing. A non-zero exit here is a
+        # genuine crash -> the job goes red and Discord fires. It writes /tmp/build_mode
+        # = snapshot|stateonly|skip for the commit step below.
+        run: python scripts/build_prices.py
         env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
           FORCE_UNLOCKED: ${{ github.event.inputs.force_unlocked }}
           PRICES_SHARD: ${{ github.event.inputs.shard }}
           PRICES_DELAY: ${{ github.event.inputs.delay }}
           PRICES_BUDGET_SEC: ${{ github.event.inputs.budget_sec }}
-      - name: commit and push (this push triggers the next run)
+      - name: commit and push (snapshot fires the chain; state-only is path-ignored)
         run: |
+          MODE=$(cat /tmp/build_mode 2>/dev/null || echo skip)
+          echo "build mode: $MODE"
+          if [ "$MODE" = "skip" ]; then echo "nothing to commit this run"; exit 0; fi
           git config user.name "price-bot"
           git config user.email "actions@users.noreply.github.com"
-          # the run is pinned to its trigger-time SHA, so the branch tip may have
-          # moved (newer snapshot or a code push). prices.json is regenerated from
-          # scratch every run — never rebase it (conflicts killed run 10:06Z);
-          # instead take the remote tip and lay the fresh snapshot on top.
-          cp data/prices.json /tmp/prices.json
-          cp data/history.json /tmp/history.json
+          # the run is pinned to its trigger-time SHA, so the branch tip may have moved
+          # (a concurrent snapshot or a code push). prices.json is regenerated from
+          # scratch, so never rebase it — take the remote tip and lay our files on top.
+          # A "stateonly" (failed) run stages price_state.json ONLY, so it can't clobber
+          # a concurrent snapshot's prices.json.
+          cp data/price_state.json /tmp/price_state.json
+          if [ "$MODE" = "snapshot" ]; then
+            cp data/prices.json /tmp/prices.json
+            cp data/history.json /tmp/history.json
+          fi
           for i in 1 2 3; do
             git fetch origin "${GITHUB_REF_NAME}"
             git reset --hard "origin/${GITHUB_REF_NAME}"
-            cp /tmp/prices.json data/prices.json
-            cp /tmp/history.json data/history.json
-            git add data/prices.json data/history.json
-            # always create a commit — an empty keepalive keeps the chain alive
-            # through Steam outages (any push to main fires the next link)
-            git diff --cached --quiet && git commit --allow-empty -m "price keepalive" \
-              || git commit -m "price snapshot"
+            cp /tmp/price_state.json data/price_state.json
+            if [ "$MODE" = "snapshot" ]; then
+              cp /tmp/prices.json data/prices.json
+              cp /tmp/history.json data/history.json
+              git add data/prices.json data/history.json data/price_state.json
+              MSG="price snapshot"
+            else
+              git add data/price_state.json
+              MSG="price cooldown (build failed)"
+            fi
+            if git diff --cached --quiet; then echo "no change to commit"; exit 0; fi
+            git commit -m "$MSG"
             git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
             sleep 5
           done

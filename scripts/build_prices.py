@@ -28,19 +28,36 @@ HIST = Path(__file__).resolve().parent.parent / "data" / "history.json"
 S = requests.Session()
 S.headers.update({"User-Agent": "tbh-appraiser-price-snapshot/1.0 (polite; 1 req/5s)"})
 
+# Steam serves residential IPs fine but rate-limits/blocks the shared GitHub Actions
+# (Azure) IP range, so this bot must be a POLITE, self-throttling tenant. State
+# persisted in price_state.json drives a cross-run cooldown; see _gate()/_on_failure().
+STATE = Path(__file__).resolve().parent.parent / "data" / "price_state.json"
+MODE_MARKER = "/tmp/build_mode"          # commit step reads this: snapshot|stateonly|skip
+PACE_SEC = 180                           # push-chain startup pacing -> ~10-min cadence
+HEALTHY_T_SEC = 600                      # a cron skips if the last snapshot is younger
+COOLDOWN_STEPS_MIN = [20, 40, 80, 120]   # escalating backoff on repeated failure (capped)
+LAST_GET_ERROR = None                    # summary of the latest get() failure (logs/state)
+
 
 def get(url, **params):
+    global LAST_GET_ERROR
     for attempt in range(5):
         try:
             r = S.get(url, params=params, timeout=20)
-        except requests.RequestException:
+        except requests.RequestException as e:
+            LAST_GET_ERROR = type(e).__name__            # Timeout / ConnectionError / ...
+            print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
             time.sleep(min(15 * (attempt + 1), 30))
             continue
         if r.status_code == 200:
             try:
                 return r.json()
             except ValueError:
-                pass
+                LAST_GET_ERROR = "bad-json"
+        else:
+            ra = r.headers.get("Retry-After", "")
+            LAST_GET_ERROR = f"HTTP {r.status_code}" + (f" Retry-After={ra}" if ra else "")
+            print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
         time.sleep(min(15 * (attempt + 1), 30))   # back off on 429/5xx, capped
     return None
 
@@ -128,7 +145,7 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
         return 0
     # env vars may arrive as "" from workflow_dispatch inputs on non-dispatch
     # events, so coalesce empties to the defaults before parsing.
-    shard = int(os.environ.get("PRICES_SHARD") or 60)
+    shard = int(os.environ.get("PRICES_SHARD") or 25)
     delay = float(os.environ.get("PRICES_DELAY") or 2.5)    # per-item pacing (s)
     deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC") or 600)
     off = int(prev_doc.get("_eoff", 0) or 0) % n
@@ -319,16 +336,106 @@ def write_snapshot(items, rate, unlocked, eoff, fx) -> None:
                    encoding="utf-8")
 
 
+def _load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_state(state: dict) -> None:
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
+
+
+def _set_mode(mode: str) -> None:
+    """Tell the workflow's commit step what we produced: snapshot|stateonly|skip."""
+    try:
+        Path(MODE_MARKER).write_text(mode, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _prev_t_epoch():
+    """Epoch seconds of the last snapshot's `t`, or None."""
+    try:
+        t = json.loads(OUT.read_text(encoding="utf-8")).get("t")
+        return datetime.fromisoformat(t).timestamp() if t else None
+    except Exception:
+        return None
+
+
+def _gate() -> bool:
+    """Decide whether to hit Steam this run. True = PROCEED, False = SKIP.
+
+    workflow_dispatch always proceeds (manual check). Otherwise:
+      - inside a persisted cooldown -> skip (don't poke a throttling Steam);
+      - a scheduled (cron) run is only a RESTARTER, so it skips while the chain is
+        clearly alive (recent `t`) and thus never races the healthy push-chain;
+      - a push (chain) run paces itself so the healthy cadence lands near ~10 min."""
+    event = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+    if event == "workflow_dispatch":
+        return True
+    now = time.time()
+    cd = float(_load_state().get("cooldown_until", 0) or 0)
+    if now < cd:
+        print(f"gate: cooldown {int((cd - now) / 60)}min left -> skip", file=sys.stderr)
+        _set_mode("skip")
+        return False
+    if event == "schedule":
+        pt = _prev_t_epoch()
+        if pt is not None and (now - pt) < HEALTHY_T_SEC:
+            print(f"gate: chain healthy (t {int((now - pt) / 60)}min old) -> skip cron",
+                  file=sys.stderr)
+            _set_mode("skip")
+            return False
+    if event == "push":
+        print(f"gate: push-chain pacing {PACE_SEC}s", file=sys.stderr)
+        time.sleep(PACE_SEC)
+    return True
+
+
+def _on_failure() -> None:
+    """Sweep couldn't reach Steam. Record an escalating cooldown in price_state.json
+    ONLY (never touch prices.json/`t`), so the next cron backs off instead of poking
+    a throttling Steam. Committed alone -> paths-ignore keeps it from firing runs."""
+    state = _load_state()
+    cf = int(state.get("consecutive_failures", 0) or 0) + 1
+    backoff = COOLDOWN_STEPS_MIN[min(cf, len(COOLDOWN_STEPS_MIN)) - 1]
+    state["consecutive_failures"] = cf
+    state["cooldown_until"] = time.time() + backoff * 60
+    state["last_error"] = LAST_GET_ERROR or "sweep empty"
+    state["last_failure_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _write_state(state)
+    _set_mode("stateonly")
+    print(f"build failed ({state['last_error']}) x{cf} -> cooldown {backoff}min",
+          file=sys.stderr)
+
+
+def _on_success() -> None:
+    """Clear the cooldown after a good sweep. Only rewrite state if it actually
+    changed (was failing), to avoid churning price_state.json every healthy run."""
+    state = _load_state()
+    if state.get("consecutive_failures") or state.get("cooldown_until"):
+        _write_state({"consecutive_failures": 0, "cooldown_until": 0,
+                      "last_recovered_utc":
+                          datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    _set_mode("snapshot")
+
+
 def main() -> None:
     t0 = time.time()
+    if not _gate():
+        print("skipped (gate)", file=sys.stderr)
+        return
     # PHASE 1 — FAST: lowest ask + listing count for EVERY item (cheap sweep),
     # median/volume carried from the previous snapshot. Written + ready to push in
     # ~2-3 min, so prices.json `t` advances every cycle even if the detail phase
     # below is slow or dies.
     items = sweep()
     if not items:
-        print("sweep failed", file=sys.stderr)
-        sys.exit(1)
+        _on_failure()
+        return
     try:
         prev_doc = json.loads(OUT.read_text(encoding="utf-8"))
     except Exception:
@@ -358,6 +465,7 @@ def main() -> None:
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
           f"_eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s")
+    _on_success()
 
 
 if __name__ == "__main__":
