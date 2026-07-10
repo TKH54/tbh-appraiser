@@ -6,7 +6,7 @@
 // grayscale pyramid first and refine the best candidate at full resolution
 // (same result as cv2 on the reference screenshot, see test_detect.js).
 
-import { _internal } from "./recognize.js?v20260626p";
+import { _internal } from "./recognize.js?v20260626q";
 const { bgr2hsv } = _internal;
 
 // ---------- gray helpers ----------
