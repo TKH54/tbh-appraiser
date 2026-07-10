@@ -1,0 +1,20 @@
+# Manual Discord webhook connectivity test. The stale-t watchdog and CI failure
+# alerts share the same DISCORD_WEBHOOK secret; run this from the Actions tab (or
+# `gh workflow run notify_test.yml`) any time you want to confirm alerts still
+# reach the channel. Sends one message and exits.
+name: discord-notify-test
+on:
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: send test message
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then echo "::error::DISCORD_WEBHOOK secret is empty"; exit 1; fi
+          jq -n --arg c "🔔 **テスト通知**: Discord連携は正常です（価格の見張り番・CI障害通知はこのチャンネルに届きます）" '{content:$c}' \
+            | curl -sf -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+          echo "sent"
