@@ -29,9 +29,6 @@ const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
 const APP_VERSION = "1.7.12";
 const CHANGELOG = [
-  { v: "1.7.12", d: "2026/7/10",
-    ja: "価格更新の遅延お知らせを修正：原因を「GitHubの障害」と決めつけず、価格の自動更新（外部データの取得・配信）が一時的に遅れているだけであることを正しく表示するようにしました。",
-    en: "Fixed the stale-price notice: instead of blaming a “GitHub outage”, it now correctly states the automatic price update (external data fetch/publish) is just temporarily delayed." },
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
     en: "Improved handling of thinly-traded (“thin market”) items with unreliable prices." },
