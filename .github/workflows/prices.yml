@@ -5,15 +5,16 @@
 #   2. DETAIL: refresh median + 24h volume for a small rotating shard (PRICES_SHARD,
 #      default 25) — the whole catalog cycles over a few hours.
 #
-# Cadence model (see scripts/build_prices.py _gate/_on_failure):
-#   - SUCCESS commits prices.json via the DEPLOY KEY (SSH). deploy-key pushes fire
-#     `push` events, so each snapshot paces ~3 min then fires the next run — a ~10-min
-#     chain, independent of GitHub's flaky cron scheduler.
-#   - FAILURE (Steam unreachable) commits price_state.json ONLY. `paths-ignore` keeps
-#     that from firing a run, so the chain STOPS instead of hammering; an escalating
-#     cooldown (20->40->80->120 min) is persisted there.
-#   - The cron is a RESTARTER: it skips while the chain is alive (recent `t`) or while
-#     a cooldown is active, and only revives a genuinely dead chain.
+# Cadence model (see scripts/build_prices.py _gate/_on_failure/_heartbeat):
+#   - The chain is a SELF-RESTARTING loop: every push (deploy-key SSH) fires the next
+#     run. GitHub's cron does NOT fire reliably on this push-busy repo, so we must not
+#     depend on it — the loop restarts itself.
+#   - SUCCESS commits prices.json (paced ~3 min) -> fires the next run (~10-min chain).
+#   - FAILURE (Steam unreachable) records an escalating cooldown (20->40->80->120 min)
+#     in price_state.json. While cooling, each run HEARTBEATS: a state-only commit that
+#     re-fires the chain WITHOUT hitting Steam, so Steam sees ~one hit per cooldown
+#     instead of every run. pages.yml paths-ignore keeps heartbeats from redeploying.
+#   - The */10 cron is only a backstop for the case where the chain ever fully dies.
 #
 # Stop the chain: Actions tab -> price-snapshot -> "..." -> Disable workflow.
 # Force a run now: Run workflow (bypasses cooldown/pacing).
@@ -21,12 +22,12 @@
 name: price-snapshot
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - data/price_state.json     # cooldown-state-only commits must NOT re-fire the chain
+    branches: [main]              # every push re-fires the chain (self-restart). The
+                                  # cooldown GATE in build_prices.py — not the trigger —
+                                  # keeps failures from hammering Steam.
   schedule:
-    - cron: "*/10 * * * *"        # RESTARTER only: revives a dead chain. Gated in
-                                  # build_prices.py so it never races the healthy chain.
+    - cron: "*/10 * * * *"        # backstop restarter only (GitHub's cron is unreliable
+                                  # here, so the chain self-restarts via the heartbeat)
   workflow_dispatch:              # manual run / chain starter (bypasses the gate)
     inputs:
       force_unlocked:
@@ -106,7 +107,7 @@ jobs:
               MSG="price snapshot"
             else
               git add data/price_state.json
-              MSG="price cooldown (build failed)"
+              MSG="price cooldown/heartbeat"
             fi
             if git diff --cached --quiet; then echo "no change to commit"; exit 0; fi
             git commit -m "$MSG"

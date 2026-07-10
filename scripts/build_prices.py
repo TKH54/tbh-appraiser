@@ -34,6 +34,9 @@ S.headers.update({"User-Agent": "tbh-appraiser-price-snapshot/1.0 (polite; 1 req
 STATE = Path(__file__).resolve().parent.parent / "data" / "price_state.json"
 MODE_MARKER = "/tmp/build_mode"          # commit step reads this: snapshot|stateonly|skip
 PACE_SEC = 180                           # push-chain startup pacing -> ~10-min cadence
+HEARTBEAT_SLEEP = 540                    # during cooldown: nap this long then re-fire the
+#                                          chain WITHOUT hitting Steam (GitHub's cron does
+#                                          not fire on this repo, so the chain self-restarts)
 HEALTHY_T_SEC = 600                      # a cron skips if the last snapshot is younger
 COOLDOWN_STEPS_MIN = [20, 40, 80, 120]   # escalating backoff on repeated failure (capped)
 LAST_GET_ERROR = None                    # summary of the latest get() failure (logs/state)
@@ -365,40 +368,58 @@ def _prev_t_epoch():
         return None
 
 
-def _gate() -> bool:
-    """Decide whether to hit Steam this run. True = PROCEED, False = SKIP.
+def _gate() -> str:
+    """Decide what to do this run: "proceed" | "heartbeat" | "skip".
 
-    workflow_dispatch always proceeds (manual check). Otherwise:
-      - inside a persisted cooldown -> skip (don't poke a throttling Steam);
-      - a scheduled (cron) run is only a RESTARTER, so it skips while the chain is
-        clearly alive (recent `t`) and thus never races the healthy push-chain;
+    Steam is hit ONLY on "proceed". workflow_dispatch always proceeds (manual). Else:
+      - inside a persisted cooldown -> nap briefly, then "heartbeat": a state-only
+        commit that RE-FIRES the chain WITHOUT hitting Steam. GitHub's cron does not
+        fire reliably on this push-busy repo, so the chain must restart ITSELF; the
+        heartbeat keeps it breathing while the cooldown gate throttles Steam to ~once
+        per cooldown instead of every run;
+      - a scheduled (cron) run is only a backstop, so it skips while the push-chain is
+        clearly alive (recent `t`) to avoid doubling it;
       - a push (chain) run paces itself so the healthy cadence lands near ~10 min."""
     event = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
     if event == "workflow_dispatch":
-        return True
+        return "proceed"
     now = time.time()
     cd = float(_load_state().get("cooldown_until", 0) or 0)
     if now < cd:
-        print(f"gate: cooldown {int((cd - now) / 60)}min left -> skip", file=sys.stderr)
-        _set_mode("skip")
-        return False
+        nap = min(cd - now, HEARTBEAT_SLEEP)
+        print(f"gate: cooldown {int((cd - now) / 60)}min left -> heartbeat nap {int(nap)}s",
+              file=sys.stderr)
+        time.sleep(nap)
+        if time.time() < cd:
+            return "heartbeat"          # still cooling -> re-fire, don't touch Steam
+        return "proceed"                # cooldown ended during the nap -> retry Steam now
     if event == "schedule":
         pt = _prev_t_epoch()
         if pt is not None and (now - pt) < HEALTHY_T_SEC:
             print(f"gate: chain healthy (t {int((now - pt) / 60)}min old) -> skip cron",
                   file=sys.stderr)
-            _set_mode("skip")
-            return False
+            return "skip"
     if event == "push":
         print(f"gate: push-chain pacing {PACE_SEC}s", file=sys.stderr)
         time.sleep(PACE_SEC)
-    return True
+    return "proceed"
+
+
+def _heartbeat() -> None:
+    """Keep the chain alive during a cooldown WITHOUT hitting Steam: bump a timestamp
+    in price_state.json so the commit is non-empty and re-fires the chain. Committed
+    alone -> pages.yml paths-ignore keeps it from redeploying the site."""
+    state = _load_state()
+    state["last_heartbeat_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _write_state(state)
+    _set_mode("stateonly")
 
 
 def _on_failure() -> None:
     """Sweep couldn't reach Steam. Record an escalating cooldown in price_state.json
-    ONLY (never touch prices.json/`t`), so the next cron backs off instead of poking
-    a throttling Steam. Committed alone -> paths-ignore keeps it from firing runs."""
+    ONLY (never touch prices.json/`t`). The state commit re-fires the chain, but the
+    cooldown gate makes the next run heartbeat instead of hitting Steam -> Steam sees
+    ~one hit per cooldown, not per run."""
     state = _load_state()
     cf = int(state.get("consecutive_failures", 0) or 0) + 1
     backoff = COOLDOWN_STEPS_MIN[min(cf, len(COOLDOWN_STEPS_MIN)) - 1]
@@ -425,8 +446,13 @@ def _on_success() -> None:
 
 def main() -> None:
     t0 = time.time()
-    if not _gate():
+    action = _gate()
+    if action == "skip":
         print("skipped (gate)", file=sys.stderr)
+        return
+    if action == "heartbeat":
+        _heartbeat()
+        print("heartbeat (cooling); chain kept alive without touching Steam", file=sys.stderr)
         return
     # PHASE 1 — FAST: lowest ask + listing count for EVERY item (cheap sweep),
     # median/volume carried from the previous snapshot. Written + ready to push in
