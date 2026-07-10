@@ -43,6 +43,9 @@ SOURCE = os.environ.get("PRICES_SOURCE") or "ci"
 #                                          STAND DOWN while local snapshots are fresh.
 LOCAL_FRESH_SEC = 1200                   # local runner is "delivering" if t is younger than
 #                                          this (2x its 10-min cadence); older -> CI takes over
+STALE_ALERT_SEC = 7200                   # t older than this -> phone AND CI are both failing;
+#                                          ping Discord so the user can reboot the phone
+STALE_ALERT_REPEAT_SEC = 43200           # ...re-ping at most every 12h while it stays stale
 PACE_SEC = 180                           # push-chain startup pacing -> ~10-min cadence
 HEARTBEAT_SLEEP = 540                    # during cooldown: nap this long then re-fire the
 #                                          chain WITHOUT hitting Steam (GitHub's cron does
@@ -381,6 +384,40 @@ def _prev_snapshot_meta():
         return None, "ci"
 
 
+def _maybe_alert_stale() -> None:
+    """Prolonged staleness watchdog. The phone runner is the primary source and the
+    CI fallback is often Steam-blocked, so a long-stale `t` usually means THE PHONE
+    IS DOWN and nobody noticed. CI keeps running (heartbeats) independent of the
+    phone, so alert from here. Rate-limited via price_state.json, which the
+    heartbeat/stateonly commits persist across runs. Best-effort: never raises."""
+    hook = os.environ.get("DISCORD_WEBHOOK")
+    if not hook:
+        return
+    pt, src = _prev_snapshot_meta()
+    if pt is None:
+        return
+    age = time.time() - pt
+    if age < STALE_ALERT_SEC:
+        return
+    state = _load_state()
+    try:
+        last = datetime.fromisoformat(state.get("last_stale_alert_utc")).timestamp()
+    except Exception:
+        last = 0
+    if time.time() - last < STALE_ALERT_REPEAT_SEC:
+        return
+    msg = (f"📵 **価格が約{int(age / 3600)}時間更新されていません**（最終更新元: {src}）。"
+           f"スマホランナーが止まっている可能性が高いです。スマホの再起動（または充電/Wi-Fi確認）"
+           f"で自動復旧します。CIフォールバックはSteamに弾かれがちなので当てにしないでください。")
+    try:
+        requests.post(hook, json={"content": msg}, timeout=15)
+        print(f"stale alert sent (t {int(age / 60)}min old)", file=sys.stderr)
+    except Exception as e:
+        print(f"stale alert failed: {e}", file=sys.stderr)
+    state["last_stale_alert_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _write_state(state)
+
+
 def _gate() -> str:
     """Decide what to do this run: "proceed" | "heartbeat" | "skip".
 
@@ -474,6 +511,7 @@ def _on_success() -> None:
 
 def main() -> None:
     t0 = time.time()
+    _maybe_alert_stale()
     action = _gate()
     if action == "skip":
         print("skipped (gate)", file=sys.stderr)

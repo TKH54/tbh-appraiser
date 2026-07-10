@@ -75,6 +75,7 @@ jobs:
         run: python scripts/build_prices.py
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}   # stale-t watchdog (phone down?)
           FORCE_UNLOCKED: ${{ github.event.inputs.force_unlocked }}
           PRICES_SHARD: ${{ github.event.inputs.shard }}
           PRICES_DELAY: ${{ github.event.inputs.delay }}
