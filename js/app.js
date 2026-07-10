@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626n";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626n";
-import { detectPageTab } from "./detect.js?v20260626n";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626n";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709b";
+import { Matcher, _internal } from "./recognize.js?v20260626o";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626o";
+import { detectPageTab } from "./detect.js?v20260626o";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626o";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709c";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,8 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.12";
+const APP_VERSION = "1.7.13";
 const CHANGELOG = [
+  { v: "1.7.13", d: "2026/7/10",
+    ja: "開きっぱなしのタブでも価格が自動で最新に更新されるようになりました（約2分ごとに新しい価格を確認）。「価格を更新」ボタンを押す必要はもうありません。",
+    en: "Prices now auto-refresh in a tab left open (checked every ~2 min) — no need to press “Refresh prices” anymore." },
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
     en: "Improved handling of thinly-traded (“thin market”) items with unreliable prices." },
@@ -261,6 +264,21 @@ function checkStale() {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") refreshPrices().then(checkStale);
 });
+
+// auto-refresh a tab left OPEN: the price bot publishes a new snapshot every ~10 min,
+// so poll every 2 min while visible (hidden tabs are covered by the visibilitychange
+// re-fetch above; browsers throttle hidden timers anyway). Re-render ONLY when `t`
+// actually advances so no-op polls never churn the table or disturb scrolling.
+const PRICE_POLL_MS = 120000;
+setInterval(async () => {
+  if (document.visibilityState !== "visible") return;
+  const prev = DATA?.prices?.t;
+  await refreshPrices();
+  if (DATA?.prices?.t !== prev) {
+    applyMode(); window._lastTotal = 0; renderAll(); animatePriceCells();
+  }
+  checkStale();
+}, PRICE_POLL_MS);
 
 // item display name (JA names only when UI is Japanese; others use EN market name)
 const dispName = h => (LANG === "ja" && DATA.items[h]?.name_ja) ? DATA.items[h].name_ja : h;
