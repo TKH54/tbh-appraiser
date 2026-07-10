@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626m";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626m";
-import { detectPageTab } from "./detect.js?v20260626m";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626m";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709a";
+import { Matcher, _internal } from "./recognize.js?v20260626n";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626n";
+import { detectPageTab } from "./detect.js?v20260626n";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626n";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709b";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,8 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.11";
+const APP_VERSION = "1.7.12";
 const CHANGELOG = [
+  { v: "1.7.12", d: "2026/7/10",
+    ja: "価格更新の遅延お知らせを修正：原因を「GitHubの障害」と決めつけず、価格の自動更新（外部データの取得・配信）が一時的に遅れているだけであることを正しく表示するようにしました。",
+    en: "Fixed the stale-price notice: instead of blaming a “GitHub outage”, it now correctly states the automatic price update (external data fetch/publish) is just temporarily delayed." },
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
     en: "Improved handling of thinly-traded (“thin market”) items with unreliable prices." },
@@ -234,10 +237,12 @@ async function refreshPrices() {
 
 // ---------------- stale-price alert ----------------
 // The price bot advances DATA.prices.t every ~8 min. If it hasn't moved in a long
-// while, the price chain has stalled — almost always a GitHub Actions/Pages delay,
-// NOT a bug in this tool. Say so plainly and link the official status page so the
-// user can verify. Purely client-side (no network, CSP-safe), so it still fires
-// when the site itself is served stale from the CDN cache during a GitHub outage.
+// while, the price chain has stalled — usually the automatic price update itself
+// (the Steam sweep being rate-limited on the CI runner, or a GitHub Actions/Pages
+// delay), NOT a bug in this tool. Say so plainly WITHOUT pinning blame on any one
+// service (CI stays green while Steam throttles, so "GitHub outage" was misleading).
+// Purely client-side (no network, CSP-safe), so it still fires even when the site
+// itself is served stale from the CDN cache during an outage.
 const STALE_MIN = 30;               // minutes since last snapshot -> show the alert
 let _staleDismissed = false;
 function checkStale() {
@@ -249,8 +254,7 @@ function checkStale() {
   el.style.display = "block";
   el.innerHTML =
     `<span class="x" id="staleX" title="${esc(t("stale_dismiss"))}">✕</span>`
-    + esc(t("stale_alert")(ageMin))
-    + ` <a href="https://www.githubstatus.com/" target="_blank" rel="noopener">${esc(t("stale_status"))} ↗</a>`;
+    + esc(t("stale_alert")(ageMin));
   $("staleX").onclick = () => { _staleDismissed = true; el.style.display = "none"; };
 }
 // returning to a long-open tab: re-fetch prices first, THEN judge freshness, so a
