@@ -1,12 +1,15 @@
 """Build web/data/prices.json — the CURRENT-price snapshot for the browser app.
 
-Runs locally or in GitHub Actions on a schedule. Steam-friendly: the whole
-catalog costs ~8 search/render pages (100 items each) + 1 priceoverview call
-used to derive the USD->JPY rate Steam itself applies.
+Runs locally or in GitHub Actions on a schedule. Steam-friendly: search/render
+now serves only 10 items/page (a full catalog pass = ~75 requests, which got the
+residential runner IP rate-limited on 2026-07-11), so each cycle sweeps only a
+rotating SWEEP_PAGES-page shard and carries the rest of the catalog from the
+previous snapshot; +1 priceoverview call derives the USD->JPY rate Steam applies.
 
 Output: {"t": iso_utc, "rate": jpy_per_usd, "items": {hash: {"p": jpy, "q": listings}}}
   p = lowest current ask in JPY (search/render is USD-only; converted)
   q = number of active listings
+  ls = epoch hour the sweep last saw the item (delisting expiry, see merge_carry)
 """
 from __future__ import annotations
 
@@ -78,25 +81,80 @@ def get(url, **params):
     return None
 
 
-def sweep() -> dict[str, dict]:
-    """All items' lowest ask (USD cents) + listing counts via search/render."""
+def sweep(prev_doc: dict) -> tuple[dict[str, dict], int]:
+    """Lowest ask (USD) + listing count for a ROTATING page shard via search/render.
+
+    Steam quietly capped search/render at 10 results/page (count=100 is ignored,
+    observed 2026-07), so a full catalog pass is ~75 requests — repeating that
+    every cycle tripped Steam's rate limiter even on the residential runner IP
+    (429 storm + half-day outage, 2026-07-11). Each cycle now fetches at most
+    SWEEP_PAGES pages from the persisted item offset (`_soff`); the caller
+    carries every other item from the previous snapshot (merge_carry), and the
+    offset only advances by what was actually fetched, so a mid-shard failure
+    just means a shorter shard — never a lost catalog. Full lowest-ask coverage
+    still lands every ceil(N/(SWEEP_PAGES*10)) cycles (~5 at the defaults)."""
+    max_pages = int(os.environ.get("SWEEP_PAGES") or 15)
+    start = int(prev_doc.get("_soff", 0) or 0)
     items: dict[str, dict] = {}
-    start, total = 0, 1
-    while start < total:
+    pages, wrapped = 0, False
+    while pages < max_pages:
         d = get("https://steamcommunity.com/market/search/render/",
                 appid=APPID, norender=1, count=100, start=start,
                 sort_column="name", sort_dir="asc")
         if not d or not d.get("success"):
             break
         total = d.get("total_count", 0)
-        for it in d.get("results", []):
+        results = d.get("results", [])
+        if not results:                 # ran off the end (catalog shrank) -> wrap once
+            if wrapped or start == 0:
+                break
+            start, wrapped = 0, True
+            time.sleep(2)
+            continue
+        for it in results:
             items[it["hash_name"]] = {
                 "usd": it.get("sell_price", 0) / 100.0,      # cents -> USD
                 "q": it.get("sell_listings", 0),
             }
-        start += len(d.get("results", [])) or 100
+        start += len(results)
+        pages += 1
+        if start >= total:              # full circle -> next cycle restarts at 0
+            start = 0
+            break
         time.sleep(2)
-    return items
+    return items, start
+
+
+CARRY_MAX_H = 24    # sweep hasn't seen an item for this long -> delisted, drop it
+
+
+def merge_carry(fresh: dict[str, dict], prev_doc: dict) -> dict[str, dict]:
+    """Overlay the freshly swept shard onto the previous snapshot's full catalog.
+
+    Carried items keep their last ask/listing count (`p` converted back to USD
+    via the snapshot's own rate) so the doc always covers every item even though
+    each cycle only sweeps a slice. `ls` (last-swept epoch hour) rides along in
+    the doc; an item the rotating sweep hasn't confirmed for CARRY_MAX_H hours
+    (many full laps) has left the market and is dropped — that replaces the old
+    full-sweep behavior where sold-out items simply stopped appearing."""
+    now_h = int(time.time() // 3600)
+    for v in fresh.values():
+        v["ls"] = now_h
+    out = dict(fresh)
+    prev_rate = float(prev_doc.get("rate") or 0)
+    if not prev_rate:
+        return out                      # no previous snapshot -> nothing to carry
+    for hn, pv in (prev_doc.get("items") or {}).items():
+        if hn in out:
+            continue
+        ls = int(pv.get("ls") or now_h)     # pre-`ls` docs: grandfather as fresh
+        if now_h - ls > CARRY_MAX_H:
+            continue
+        p = pv.get("p")
+        if p is None:
+            continue
+        out[hn] = {"usd": round(p / prev_rate, 4), "q": pv.get("q", 0), "ls": ls}
+    return out
 
 
 def derive_rate(items: dict[str, dict]):
@@ -123,6 +181,19 @@ def derive_rate(items: dict[str, dict]):
                     return round(jpy / v["usd"], 2)
         time.sleep(2)
     return None     # caller falls back to the last known rate
+
+
+def sane_rate(derived, prev_rate, fx_jpy):
+    """derive_rate reads ONE item's JPY quote against its swept USD ask; with the
+    small rotating shard the candidate pool can be all cheap/illiquid items, and a
+    listing change between the two reads skews the ratio (observed +6% on a 2-page
+    shard -> EVERY displayed price would jump 6%). Accept the derived rate only if
+    it roughly agrees with the previous snapshot's rate or the market fx (Steam's
+    conversion tracks market fx closely); otherwise carry the previous rate."""
+    for ref in (prev_rate, fx_jpy):
+        if derived and ref and abs(derived / ref - 1) <= 0.04:
+            return derived
+    return prev_rate or fx_jpy or 155.0
 
 
 def carry_mv_baseline(items: dict[str, dict], prev_doc: dict) -> None:
@@ -333,16 +404,18 @@ def fetch_fx() -> dict:
     return {"JPY": 155.0, "CNY": 7.1, "TWD": 32.0, "KRW": 1380.0, "RUB": 90.0}
 
 
-def write_snapshot(items, rate, unlocked, eoff, fx) -> None:
+def write_snapshot(items, rate, unlocked, eoff, soff, fx) -> None:
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "src": SOURCE,                     # ci|local — _gate() reads this to stand down
         "rate": rate,
         "unlocked": unlocked,
         "_eoff": eoff,                     # rotating enrich offset (persisted)
+        "_soff": soff,                     # rotating sweep offset (persisted)
         "gev": grade_averages(items, rate),
         "fx": fx,
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],
+                      **({"ls": v["ls"]} if "ls" in v else {}),
                       **({"m": v["m"]} if "m" in v else {}),
                       **({"lm": v["lm"]} if "lm" in v else {}),
                       **({"v": v["v"]} if "v" in v else {})}
@@ -520,27 +593,32 @@ def main() -> None:
         _heartbeat()
         print("heartbeat (cooling); chain kept alive without touching Steam", file=sys.stderr)
         return
-    # PHASE 1 — FAST: lowest ask + listing count for EVERY item (cheap sweep),
-    # median/volume carried from the previous snapshot. Written + ready to push in
-    # ~2-3 min, so prices.json `t` advances every cycle even if the detail phase
-    # below is slow or dies.
-    items = sweep()
-    if not items:
-        _on_failure()
-        return
+    # PHASE 1 — FAST: lowest ask + listing count for a rotating page shard
+    # (sweep), every other item carried from the previous snapshot (merge_carry),
+    # median/volume carried too. Written + ready to push in minutes, so
+    # prices.json `t` advances every cycle even if the detail phase below is
+    # slow or dies.
     try:
         prev_doc = json.loads(OUT.read_text(encoding="utf-8"))
     except Exception:
         prev_doc = {}
-    rate = derive_rate(items) or prev_doc.get("rate") or 155.0
+    fresh, soff = sweep(prev_doc)
+    if not fresh:
+        _on_failure()
+        return
+    fx = fetch_fx()
+    # rate from FRESH items only (a carried/stale ask would skew it), then sanity-
+    # checked against the previous rate / market fx (see sane_rate).
+    rate = sane_rate(derive_rate(fresh), prev_doc.get("rate"), fx.get("JPY"))
+    items = merge_carry(fresh, prev_doc)
     unlocked = detect_unlocked(items)      # reads previous OUT
     prev_off = int(prev_doc.get("_eoff", 0) or 0)
-    fx = fetch_fx()
     carry_mv_baseline(items, prev_doc)     # carry prev median/volume onto all items
     carry_last_median(items, rate)
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, prev_off, fx)
-    print(f"fast snapshot: {len(items)} items, {OUT.stat().st_size // 1024} KB, "
+    write_snapshot(items, rate, unlocked, prev_off, soff, fx)
+    print(f"fast snapshot: {len(fresh)} fresh (_soff {prev_doc.get('_soff', 0) or 0}"
+          f"->{soff}) / {len(items)} items, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s", file=sys.stderr)
 
     # PHASE 2 — DETAIL: refresh a small rotating shard's median/volume, then
@@ -553,7 +631,7 @@ def main() -> None:
         eoff = prev_off
     carry_last_median(items, rate)         # apply lm to the freshly enriched items
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, eoff, fx)
+    write_snapshot(items, rate, unlocked, eoff, soff, fx)
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
           f"_eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s")
