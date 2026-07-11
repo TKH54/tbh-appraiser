@@ -34,11 +34,23 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy pillow
+
+      # Egress saver: shared label snapshot -> only NEW rows leave Supabase
+      # (full-table fetches blew the free-tier egress quota, 2026-07-12 mail).
+      - name: Restore labels snapshot (Supabase delta fetch)
+        uses: actions/cache/restore@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
+          restore-keys: labels-snapshot-
+
       - name: Full re-trim (measure or apply)
         id: retrim
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
+          mkdir -p .labels_snapshot
           if [ "${{ github.event.inputs.apply }}" = "true" ]; then
             python scripts/trim_offenders.py --full --out data/learned_seed.json \
               --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
@@ -46,6 +58,13 @@ jobs:
             python scripts/trim_offenders.py --full --dry-run \
               --bar "${{ github.event.inputs.bar || '0.075' }}" | tee /tmp/retrim.log
           fi
+
+      - name: Save labels snapshot
+        if: always() && hashFiles('.labels_snapshot/labels.jsonl.gz') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
 
       - name: Bump release (apply only)
         if: github.event.inputs.apply == 'true'

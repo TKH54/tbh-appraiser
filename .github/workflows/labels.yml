@@ -40,13 +40,28 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy pillow
+
+      # Egress saver: reuse the cached label snapshot so promote+trim pull only
+      # NEW rows from Supabase — full-table fetches (~hundreds of MB each) blew
+      # the free-tier egress quota (2026-07-12 mail). Cache miss = full fetch
+      # (the old behavior), and the snapshot is rebuilt automatically.
+      - name: Restore labels snapshot (Supabase delta fetch)
+        uses: actions/cache/restore@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
+          restore-keys: labels-snapshot-
+
       - name: Save pre-promotion seed (baseline for offender-trim)
         run: cp data/learned_seed.json /tmp/baseline_seed.json
       - name: Run promotion gates
         id: promote
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" --safe-only | tee /tmp/promote.log
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
+        run: |
+          mkdir -p .labels_snapshot
+          python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" --safe-only | tee /tmp/promote.log
 
       # Drop every NEW cluster that creates a confident WRONG id (any item, any
       # price), iterating until the batch adds ZERO new mis-IDs. Enforces the
@@ -56,6 +71,7 @@ jobs:
         if: steps.promote.outputs.promoted != '0' && steps.promote.outputs.promoted != ''
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
           set -o pipefail   # fail the job if trim can't reach 0 new mis-IDs
           python scripts/trim_offenders.py \
@@ -63,6 +79,15 @@ jobs:
             --candidate data/learned_seed.json \
             --out data/learned_seed.json \
             --manifest review_manifest.json | tee /tmp/trim.log
+
+      # Persist the updated snapshot for the next run (also on failure — the
+      # snapshot is valid regardless of what the gates decided).
+      - name: Save labels snapshot
+        if: always() && hashFiles('.labels_snapshot/labels.jsonl.gz') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
 
       - name: Bump release so the labels reach returning visitors
         if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
