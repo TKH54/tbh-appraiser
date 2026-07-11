@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
 import json
 import os
 import sys
@@ -63,16 +64,51 @@ def _get(u: str, headers: dict) -> list[dict]:
         return json.loads(r.read())
 
 
+def _snapshot_load(path: Path) -> list[dict]:
+    """Rows from a gzip-JSONL snapshot. [] on any corruption (caller re-fetches full)."""
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        if rows and "id" not in rows[0]:
+            return []
+        seen: set = set()  # a crashed append could leave dupes; ids must stay unique
+        return [r for r in rows if not (r["id"] in seen or seen.add(r["id"]))]
+    except Exception:
+        return []
+
+
+def _snapshot_write(path: Path, rows: list[dict], mode: str) -> None:
+    # "at" appends only the delta (appended gzip members form one valid stream);
+    # "wt" rewrites from scratch (fresh snapshot, or self-heal after corruption)
+    with gzip.open(path, mode, encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
 def fetch_rows(url: str, key: str) -> list[dict]:
     """All label rows (service_role key, bypasses RLS). KEYSET-paginate on the
     primary key `id` (indexed, unique) so it's O(n) with no offset row-cap — the old
     OFFSET paging was O(n^2) and appeared to truncate at ~50k. Falls back to offset
-    paging if the table has no usable `id` column (KeyError) or the id query errors."""
+    paging if the table has no usable `id` column (KeyError) or the id query errors.
+
+    LABELS_SNAPSHOT=<path> (env) enables egress-saving delta mode: rows already in
+    the gzip-JSONL snapshot are reused and only id > max(snapshot) is fetched from
+    Supabase, then appended back. The table is insert-only with a monotonic id, so
+    snapshot+delta == full fetch. Unset (local runs) -> full fetch, unchanged."""
     headers = {"apikey": key, "Authorization": "Bearer " + key}
     base = f"{url}/rest/v1/labels?select=*"
     page = 1000
+    snap_path = os.environ.get("LABELS_SNAPSHOT")
+    snap_rows: list[dict] = []
+    snap_dirty = False  # existing file yielded no rows -> rewrite instead of append
+    if snap_path and Path(snap_path).exists():
+        snap_rows = _snapshot_load(Path(snap_path))
+        snap_dirty = not snap_rows
+        print(f"snapshot: {len(snap_rows)} rows from {snap_path}", file=sys.stderr)
     try:
-        rows, last = [], None
+        rows = list(snap_rows)
+        last = max((r["id"] for r in snap_rows), default=None)
+        fresh: list[dict] = []
         while True:
             q = f"{base}&order=id.asc&limit={page}" + (f"&id=gt.{last}" if last is not None else "")
             batch = _get(q, headers)
@@ -81,9 +117,16 @@ def fetch_rows(url: str, key: str) -> list[dict]:
             if "id" not in batch[0]:
                 raise KeyError("labels table has no id column")
             rows += batch
+            fresh += batch
             last = batch[-1]["id"]
             if len(batch) < page:
                 break
+        if snap_path:
+            print(f"snapshot: +{len(fresh)} new rows fetched", file=sys.stderr)
+            if snap_dirty:
+                _snapshot_write(Path(snap_path), rows, "wt")
+            elif fresh:
+                _snapshot_write(Path(snap_path), fresh, "at")
         return rows
     except (urllib.error.HTTPError, KeyError):
         pass  # keyset unavailable -> proven offset paging (slower, but correct)

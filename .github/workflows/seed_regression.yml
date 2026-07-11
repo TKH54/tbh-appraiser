@@ -72,10 +72,21 @@ jobs:
             git show "${CREF}:data/learned_seed.json" > candidate_seed.json
             echo "candidate = learned_seed.json @ ${CREF}"
           fi
+      # Egress saver: shared label snapshot -> only NEW rows leave Supabase
+      # (full-table fetches blew the free-tier egress quota, 2026-07-12 mail).
+      - name: Restore labels snapshot (Supabase delta fetch)
+        uses: actions/cache/restore@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
+          restore-keys: labels-snapshot-
+
       - name: Run seed regression check
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
+          mkdir -p .labels_snapshot
           if [ -n "${{ github.event.inputs.render }}" ]; then
             python scripts/seed_regression.py --render "${{ github.event.inputs.render }}" --render-out probe.png
           elif [ -n "${{ github.event.inputs.diag }}" ]; then
@@ -92,6 +103,13 @@ jobs:
             [ -f candidate_seed.json ] && ARGS="$ARGS --candidate candidate_seed.json"
             python scripts/seed_regression.py $ARGS
           fi
+      - name: Save labels snapshot
+        if: always() && hashFiles('.labels_snapshot/labels.jsonl.gz') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
+
       - name: Upload render probe
         if: ${{ github.event.inputs.render != '' }}
         uses: actions/upload-artifact@v4
