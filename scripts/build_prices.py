@@ -73,14 +73,33 @@ UNLOCK3_ABS = 25                         # distinct listed top-grade items >= th
 UNLOCK3_RISE = 5                         # ...any rise this big means new listings work again
 LAST_GET_ERROR = None                    # summary of the latest get() failure (logs/state)
 
+# ---- adaptive load-shedding (recurrence fix for the 2026-07-12 slow-cycle) ----
+# Steam throttles SUSTAINED load adaptively; pre-throttle the bot pushed its full
+# request budget through anyway (retry-wait per request), stretching a cycle from
+# ~5 to ~23 min and PROLONGING the squeeze. Instead, retries observed this run are
+# counted, and once they cross THROTTLED_AT the run finishes in low-power mode:
+# a couple of sweep pages (so `t` still advances with real data), a trickle of
+# enrich, no rate probe. Cadence stays ~10 min, Steam sees ~1/4 the requests, and
+# the budget restores itself the first cycle Steam stops throttling.
+RETRIES_THIS_RUN = 0                     # bumped by get() on every retry (429/5xx/timeouts)
+THROTTLED_AT = 3                         # retries this run >= this -> low-power mode
+#                                          (healthy runs see 0-1 sporadic retries)
+THROTTLED_MIN_PAGES = 2                  # sweep floor: keep t advancing on real data
+THROTTLED_MIN_ENRICH = 5                 # enrich floor: median/volume still trickle
+
+
+def _throttled() -> bool:
+    return RETRIES_THIS_RUN >= THROTTLED_AT
+
 
 def get(url, **params):
-    global LAST_GET_ERROR
+    global LAST_GET_ERROR, RETRIES_THIS_RUN
     for attempt in range(5):
         try:
             r = S.get(url, params=params, timeout=20)
         except requests.RequestException as e:
             LAST_GET_ERROR = type(e).__name__            # Timeout / ConnectionError / ...
+            RETRIES_THIS_RUN += 1
             print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
             time.sleep(min(15 * (attempt + 1), 30))
             continue
@@ -93,6 +112,7 @@ def get(url, **params):
             ra = r.headers.get("Retry-After", "")
             LAST_GET_ERROR = f"HTTP {r.status_code}" + (f" Retry-After={ra}" if ra else "")
             print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
+        RETRIES_THIS_RUN += 1
         time.sleep(min(15 * (attempt + 1), 30))   # back off on 429/5xx, capped
     return None
 
@@ -114,6 +134,10 @@ def sweep(prev_doc: dict) -> tuple[dict[str, dict], int]:
     items: dict[str, dict] = {}
     pages, wrapped = 0, False
     while pages < max_pages:
+        if pages >= THROTTLED_MIN_PAGES and _throttled():
+            print(f"sweep: throttled (retries={RETRIES_THIS_RUN}) -> low-power, "
+                  f"stopping after {pages} pages", file=sys.stderr)
+            break               # offset advanced only by what we fetched -> no loss
         d = get("https://steamcommunity.com/market/search/render/",
                 appid=APPID, norender=1, count=100, start=start,
                 sort_column="name", sort_dir="asc")
@@ -181,6 +205,9 @@ def derive_rate(items: dict[str, dict]):
     (throttled/down) — the caller then keeps the last known rate rather than
     grinding through retries and slowing the fast phase. The rate is stable, so a
     carried value is fine."""
+    if _throttled():
+        return None             # skip the probe under throttle; the rate is stable
+        #                         and sane_rate carries the previous one anyway
     candidates = sorted(items.items(), key=lambda kv: -kv[1]["q"])
     candidates = [kv for kv in candidates if kv[1]["usd"] >= 1.0][:10] or candidates[:10]
     candidates.sort(key=lambda kv: -kv[1]["usd"])
@@ -254,6 +281,10 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     off = int(prev_doc.get("_eoff", 0) or 0) % n
     done = refreshed = 0
     while done < shard and done < n and time.time() < deadline:
+        if done >= THROTTLED_MIN_ENRICH and _throttled():
+            print(f"enrich: throttled (retries={RETRIES_THIS_RUN}) -> low-power, "
+                  f"stopping after {done} items", file=sys.stderr)
+            break               # offset advances by `done` -> the lap just resumes
         hn = keys[(off + done) % n]
         v = items[hn]
         d = get("https://steamcommunity.com/market/priceoverview/",
@@ -780,7 +811,8 @@ def main() -> None:
     write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx)
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
           f"unlocked3 {unlocked3}, _eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
-          f"elapsed={time.time() - t0:.0f}s")
+          f"elapsed={time.time() - t0:.0f}s, retries={RETRIES_THIS_RUN}"
+          f"{' [LOW-POWER: throttled]' if _throttled() else ''}")
     _on_success()
     # unlock ping from a CI-proceed run (fallback mode); in the normal phone-primary
     # regime the CI standby relays it instead (_standby_alerts — the phone has no
