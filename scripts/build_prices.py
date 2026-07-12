@@ -74,35 +74,48 @@ UNLOCK3_RISE = 5                         # ...any rise this big means new listin
 LAST_GET_ERROR = None                    # summary of the latest get() failure (logs/state)
 
 # ---- adaptive load-shedding (recurrence fix for the 2026-07-12 slow-cycle) ----
-# Steam throttles SUSTAINED load adaptively; pre-throttle the bot pushed its full
-# request budget through anyway (retry-wait per request), stretching a cycle from
-# ~5 to ~23 min and PROLONGING the squeeze. Instead, retries observed this run are
-# counted, and once they cross THROTTLED_AT the run finishes in low-power mode:
-# a couple of sweep pages (so `t` still advances with real data), a trickle of
-# enrich, no rate probe. Cadence stays ~10 min, Steam sees ~1/4 the requests, and
-# the budget restores itself the first cycle Steam stops throttling.
-RETRIES_THIS_RUN = 0                     # bumped by get() on every retry (429/5xx/timeouts)
-THROTTLED_AT = 3                         # retries this run >= this -> low-power mode
-#                                          (healthy runs see 0-1 sporadic retries)
+# Steam throttles SUSTAINED load adaptively, in two shapes: hard 429s (retry
+# chains) and TARPITTING — every request succeeds but takes ~30s instead of ~1s
+# (observed 2026-07-12 evening: cycles uniformly stretched to ~23 min with data
+# intact = slow-but-successful requests, not failures). Pre-throttle the bot
+# pushed its full request budget through anyway, sustaining the very load Steam
+# was squeezing. Both shapes now count as THROTTLE SIGNALS; past THROTTLED_AT
+# the run finishes in low-power mode: a couple of sweep pages (so `t` still
+# advances with real data), a trickle of enrich, no rate probe. Cadence stays
+# ~10 min, Steam sees ~1/4 the requests, and the budget restores itself the
+# first cycle Steam stops throttling.
+THROTTLE_SIGNALS = 0                     # bumped by get(): +1 per retry (429/5xx/timeout)
+#                                          and +1 per SLOW response (tarpit)
+THROTTLED_AT = 3                         # signals this run >= this -> low-power mode
+#                                          (healthy runs see 0-1 sporadic signals)
+SLOW_REQ_SEC = 10                        # a 200-OK slower than this is a tarpit signal
+#                                          (healthy Steam answers in ~1s; tarpit ~30s)
 THROTTLED_MIN_PAGES = 2                  # sweep floor: keep t advancing on real data
 THROTTLED_MIN_ENRICH = 5                 # enrich floor: median/volume still trickle
+SWEEP_TIME_BUDGET_SEC = 240              # belt-and-braces: however Steam slows us,
+#                                          the sweep phase never runs longer than this
 
 
 def _throttled() -> bool:
-    return RETRIES_THIS_RUN >= THROTTLED_AT
+    return THROTTLE_SIGNALS >= THROTTLED_AT
 
 
 def get(url, **params):
-    global LAST_GET_ERROR, RETRIES_THIS_RUN
+    global LAST_GET_ERROR, THROTTLE_SIGNALS
     for attempt in range(5):
+        t_req = time.time()
         try:
             r = S.get(url, params=params, timeout=20)
         except requests.RequestException as e:
             LAST_GET_ERROR = type(e).__name__            # Timeout / ConnectionError / ...
-            RETRIES_THIS_RUN += 1
+            THROTTLE_SIGNALS += 1
             print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
             time.sleep(min(15 * (attempt + 1), 30))
             continue
+        if time.time() - t_req > SLOW_REQ_SEC:           # tarpit: slow even when it works
+            THROTTLE_SIGNALS += 1
+            print(f"  slow response ({time.time() - t_req:.0f}s) -> throttle signal "
+                  f"{THROTTLE_SIGNALS}", file=sys.stderr)
         if r.status_code == 200:
             try:
                 return r.json()
@@ -112,7 +125,7 @@ def get(url, **params):
             ra = r.headers.get("Retry-After", "")
             LAST_GET_ERROR = f"HTTP {r.status_code}" + (f" Retry-After={ra}" if ra else "")
             print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
-        RETRIES_THIS_RUN += 1
+        THROTTLE_SIGNALS += 1
         time.sleep(min(15 * (attempt + 1), 30))   # back off on 429/5xx, capped
     return None
 
@@ -133,10 +146,13 @@ def sweep(prev_doc: dict) -> tuple[dict[str, dict], int]:
     start = int(prev_doc.get("_soff", 0) or 0)
     items: dict[str, dict] = {}
     pages, wrapped = 0, False
+    t_sweep = time.time()
     while pages < max_pages:
-        if pages >= THROTTLED_MIN_PAGES and _throttled():
-            print(f"sweep: throttled (retries={RETRIES_THIS_RUN}) -> low-power, "
-                  f"stopping after {pages} pages", file=sys.stderr)
+        slow = time.time() - t_sweep > SWEEP_TIME_BUDGET_SEC
+        if pages >= THROTTLED_MIN_PAGES and (_throttled() or slow):
+            print(f"sweep: {'time budget spent' if slow else 'throttled'} "
+                  f"(signals={THROTTLE_SIGNALS}, {time.time() - t_sweep:.0f}s) -> "
+                  f"low-power, stopping after {pages} pages", file=sys.stderr)
             break               # offset advanced only by what we fetched -> no loss
         d = get("https://steamcommunity.com/market/search/render/",
                 appid=APPID, norender=1, count=100, start=start,
@@ -282,7 +298,7 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     done = refreshed = 0
     while done < shard and done < n and time.time() < deadline:
         if done >= THROTTLED_MIN_ENRICH and _throttled():
-            print(f"enrich: throttled (retries={RETRIES_THIS_RUN}) -> low-power, "
+            print(f"enrich: throttled (signals={THROTTLE_SIGNALS}) -> low-power, "
                   f"stopping after {done} items", file=sys.stderr)
             break               # offset advances by `done` -> the lap just resumes
         hn = keys[(off + done) % n]
@@ -811,7 +827,7 @@ def main() -> None:
     write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx)
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
           f"unlocked3 {unlocked3}, _eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
-          f"elapsed={time.time() - t0:.0f}s, retries={RETRIES_THIS_RUN}"
+          f"elapsed={time.time() - t0:.0f}s, signals={THROTTLE_SIGNALS}"
           f"{' [LOW-POWER: throttled]' if _throttled() else ''}")
     _on_success()
     # unlock ping from a CI-proceed run (fallback mode); in the normal phone-primary
