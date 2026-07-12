@@ -38,10 +38,12 @@ def _delete(url: str, headers: dict) -> None:
 
 
 def _table_ids(url: str, headers: dict) -> list[int]:
-    """All ids currently in the table (id-only keyset paging — a few bytes/row)."""
-    ids, last, page = [], None, 10000
+    """All ids currently in the table (id-only keyset paging — a few bytes/row).
+    Loops until an EMPTY batch: PostgREST silently caps rows-per-request (Supabase
+    default 1000), so a short batch does NOT mean the end of the table."""
+    ids, last = [], None
     while True:
-        q = f"{url}/rest/v1/labels?select=id&order=id.asc&limit={page}" + (
+        q = f"{url}/rest/v1/labels?select=id&order=id.asc&limit=1000" + (
             f"&id=gt.{last}" if last is not None else "")
         with urllib.request.urlopen(urllib.request.Request(q, headers=headers), timeout=60) as r:
             batch = json.loads(r.read())
@@ -49,8 +51,6 @@ def _table_ids(url: str, headers: dict) -> list[int]:
             break
         ids += [row["id"] for row in batch]
         last = batch[-1]["id"]
-        if len(batch) < page:
-            break
     return ids
 
 
