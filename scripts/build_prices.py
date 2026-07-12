@@ -44,8 +44,11 @@ SOURCE = os.environ.get("PRICES_SOURCE") or "ci"
 #                                          runner: the phone/PC — see scripts/phone_runner.sh).
 #                                          Written into prices.json as `src`; _gate() makes CI
 #                                          STAND DOWN while local snapshots are fresh.
-LOCAL_FRESH_SEC = 1200                   # local runner is "delivering" if t is younger than
-#                                          this (2x its 10-min cadence); older -> CI takes over
+LOCAL_FRESH_SEC = 1800                   # local runner is "delivering" if t is younger than
+#                                          this; older -> CI takes over. 3x the 10-min cadence:
+#                                          Steam throttling stretches healthy phone cycles to
+#                                          ~23 min (observed 2026-07-12), and 2x caused CI to
+#                                          ping-pong takeovers against a merely-slow phone
 STALE_ALERT_SEC = 7200                   # t older than this -> phone AND CI are both failing;
 #                                          ping Discord so the user can reboot the phone
 STALE_ALERT_REPEAT_SEC = 43200           # ...re-ping at most every 12h while it stays stale
@@ -57,6 +60,12 @@ HEALTHY_T_SEC = 600                      # a cron skips if the last snapshot is 
 COOLDOWN_STEPS_MIN = [20, 40, 80, 120]   # escalating backoff on repeated failure (capped)
 FALLBACK_ALERT_GAP_SEC = 3600            # min gap between repeated local->CI fallback pings
 #                                          (a flapping phone would otherwise spam Discord)
+FALLBACK_ALERT_AGE_SEC = 2700            # ping only when local has been quiet THIS long.
+#                                          Deliberately looser than LOCAL_FRESH_SEC: CI may
+#                                          quietly cover a slow/backing-off phone (that
+#                                          self-heals), but a 45-min silence is a real outage
+#                                          worth waking the user for (observed 2026-07-12:
+#                                          a 25-min slow cycle pinged the user for nothing)
 TOP3_RE = re.compile(r"\((Celestial|Divine|Cosmic)\)")   # top-3 listing-restricted grades
 UNLOCK3_ABS = 25                         # distinct listed top-grade items >= this -> unlocked.
 #                                          9 pre-restriction leftovers were live 2026-07-12;
@@ -523,24 +532,31 @@ def _maybe_alert_fallback() -> None:
     pt, src = _prev_snapshot_meta()
     if src != "local":
         return
-    if pt is not None and (time.time() - pt) < LOCAL_FRESH_SEC:
-        return    # phone still delivering — this is a manual dispatch, not a takeover
+    if pt is None or (time.time() - pt) < FALLBACK_ALERT_AGE_SEC:
+        return    # merely slow (Steam-throttled cycles) or a manual dispatch — CI may
+        #           be covering, but that self-heals; only a long silence is worth a ping
     state = _load_state()
     try:
         last = datetime.fromisoformat(state.get("last_fallback_alert_utc")).timestamp()
     except Exception:
         last = 0
-    state["fallback_active"] = True
-    if time.time() - last >= FALLBACK_ALERT_GAP_SEC:
-        age_min = int((time.time() - pt) / 60) if pt else "?"
-        if _post_discord(
-                f"📵 **スマホランナーの更新が止まったのでCIフォールバックに切替**"
-                f"（最終ローカル更新: 約{age_min}分前）。CIはSteamに弾かれやすく更新が遅れ"
-                f"がちです。スマホの電源・Wi-Fi・Termuxを確認してください（再起動で自動復旧、"
-                f"復旧すればCIは自動でスタンバイに戻ります）。"):
-            state["last_fallback_alert_utc"] = datetime.now(
-                timezone.utc).isoformat(timespec="seconds")
-    _write_state(state)
+    if time.time() - last < FALLBACK_ALERT_GAP_SEC:
+        return
+    age_min = int((time.time() - pt) / 60)
+    # fallback_active is set ONLY when the ping was actually delivered, so the
+    # ✅ recovery ping in _standby_alerts always pairs with a real 📵 — an unsent
+    # flag would otherwise emit lone ✅ noise every time a slow phone cycle let
+    # one CI run proceed.
+    if _post_discord(
+            f"📵 **スマホランナーの更新が{age_min}分止まっています（CIフォールバック中）**。"
+            f"よくある原因は2つ: (1) Steamが自宅IPを一時的に絞っていてスマホが遅い/失敗中"
+            f"→何もしなくても自然復旧します。(2) スマホ側の問題（電源・Wi-Fi・Termux停止）"
+            f"→スマホ再起動で復旧。CIはSteamに弾かれやすいので、長引くようならスマホの確認を。"
+            f"復旧したら✅を送ります。"):
+        state["fallback_active"] = True
+        state["last_fallback_alert_utc"] = datetime.now(
+            timezone.utc).isoformat(timespec="seconds")
+        _write_state(state)
 
 
 def _standby_alerts() -> None:
