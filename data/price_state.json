@@ -1,1 +1,1 @@
-{"consecutive_failures":2,"cooldown_until":1783863497.560895,"last_recovered_utc":"2026-07-12T08:52:17+00:00","last_heartbeat_utc":"2026-07-12T19:16:09+00:00","last_error":"HTTP 429","last_failure_utc":"2026-07-12T12:58:17+00:00"}
+{"consecutive_failures":0,"cooldown_until":0,"last_recovered_utc":"2026-07-12T19:19:18+00:00","last_heartbeat_utc":"2026-07-12T19:16:09+00:00","last_error":"HTTP 429","last_failure_utc":"2026-07-12T12:58:17+00:00"}
