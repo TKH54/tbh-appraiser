@@ -38,11 +38,20 @@ jobs:
       # Egress saver: shared label snapshot -> only NEW rows leave Supabase
       # (full-table fetches blew the free-tier egress quota, 2026-07-12 mail).
       - name: Restore labels snapshot (Supabase delta fetch)
+        id: snaprestore
         uses: actions/cache/restore@v4
         with:
           path: .labels_snapshot/labels.jsonl.gz
           key: labels-snapshot-${{ github.run_id }}
           restore-keys: labels-snapshot-
+
+      - name: Seed snapshot from the release archive when cache missed
+        if: steps.snaprestore.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .labels_snapshot
+          gh release download labels-archive -p labels.jsonl.gz -D .labels_snapshot -R "$GITHUB_REPOSITORY" || true
 
       - name: Full re-trim (measure or apply)
         id: retrim

@@ -46,11 +46,22 @@ jobs:
       # the free-tier egress quota (2026-07-12 mail). Cache miss = full fetch
       # (the old behavior), and the snapshot is rebuilt automatically.
       - name: Restore labels snapshot (Supabase delta fetch)
+        id: snaprestore
         uses: actions/cache/restore@v4
         with:
           path: .labels_snapshot/labels.jsonl.gz
           key: labels-snapshot-${{ github.run_id }}
           restore-keys: labels-snapshot-
+
+      # Cache evicted (7-day idle / LRU)? Fall back to the durable archive on the
+      # labels-archive release so the full history survives and the run stays cheap.
+      - name: Seed snapshot from the release archive when cache missed
+        if: steps.snaprestore.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .labels_snapshot
+          gh release download labels-archive -p labels.jsonl.gz -D .labels_snapshot -R "$GITHUB_REPOSITORY" || true
 
       - name: Save pre-promotion seed (baseline for offender-trim)
         run: cp data/learned_seed.json /tmp/baseline_seed.json
@@ -88,6 +99,30 @@ jobs:
         with:
           path: .labels_snapshot/labels.jsonl.gz
           key: labels-snapshot-${{ github.run_id }}
+
+      # Durable copy of the full label history (Actions cache is evictable).
+      # MUST succeed before pruning — prune_labels.py deletes only archived rows.
+      - name: Archive snapshot to the labels-archive release
+        id: archive
+        if: hashFiles('.labels_snapshot/labels.jsonl.gz') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view labels-archive -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create labels-archive -R "$GITHUB_REPOSITORY" --latest=false \
+              --title "Crowd-label history archive" \
+              --notes "Full gzip-JSONL history of the Supabase labels table (auto-updated by labels.yml). Rows pruned from Supabase live on here."
+          gh release upload labels-archive .labels_snapshot/labels.jsonl.gz --clobber -R "$GITHUB_REPOSITORY"
+
+      # Keep the table under the 50k insert-cap trigger ("collection full" killed
+      # collection on 2026-07-12) and free-tier DB size/egress low. Deletes ONLY
+      # rows verified present in the just-archived snapshot (see prune_labels.py).
+      - name: Prune Supabase labels (archived rows only)
+        if: steps.archive.outcome == 'success'
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
+        run: python scripts/prune_labels.py --keep 20000
 
       - name: Bump release so the labels reach returning visitors
         if: steps.trim.outputs.survivors != '0' && steps.trim.outputs.survivors != ''
