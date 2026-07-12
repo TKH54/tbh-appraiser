@@ -88,12 +88,20 @@ THROTTLE_SIGNALS = 0                     # bumped by get(): +1 per retry (429/5x
 #                                          and +1 per SLOW response (tarpit)
 THROTTLED_AT = 3                         # signals this run >= this -> low-power mode
 #                                          (healthy runs see 0-1 sporadic signals)
-SLOW_REQ_SEC = 10                        # a 200-OK slower than this is a tarpit signal
-#                                          (healthy Steam answers in ~1s; tarpit ~30s)
+SLOW_REQ_SEC = 5                         # a 200-OK slower than this is a tarpit signal
+#                                          (healthy Steam answers in ~1s; observed stealth
+#                                          tarpit ~8-9s slipped under the original 10s)
 THROTTLED_MIN_PAGES = 2                  # sweep floor: keep t advancing on real data
 THROTTLED_MIN_ENRICH = 5                 # enrich floor: median/volume still trickle
 SWEEP_TIME_BUDGET_SEC = 240              # belt-and-braces: however Steam slows us,
 #                                          the sweep phase never runs longer than this
+THROTTLED_ENRICH_BUDGET_SEC = 120        # once throttled, enrich is cut by TIME too:
+#                                          2026-07-12 the count floor alone didn't help —
+#                                          priceoverview was so squeezed (~2 min/item incl.
+#                                          retries) that 5 items still ate the full 600s
+THROTTLED_GET_ATTEMPTS = 2               # once throttled, stop retry-chaining each request
+#                                          (5 attempts + backoffs = ~2 min on ONE item; a
+#                                          missed item just keeps its carried value)
 
 
 def _throttled() -> bool:
@@ -103,6 +111,10 @@ def _throttled() -> bool:
 def get(url, **params):
     global LAST_GET_ERROR, THROTTLE_SIGNALS
     for attempt in range(5):
+        if attempt >= THROTTLED_GET_ATTEMPTS and _throttled():
+            print(f"  get: throttled -> giving up after {attempt} attempts",
+                  file=sys.stderr)
+            return None
         t_req = time.time()
         try:
             r = S.get(url, params=params, timeout=20)
@@ -296,10 +308,16 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC") or 600)
     off = int(prev_doc.get("_eoff", 0) or 0) % n
     done = refreshed = 0
+    t_enrich = time.time()
     while done < shard and done < n and time.time() < deadline:
-        if done >= THROTTLED_MIN_ENRICH and _throttled():
+        # under throttle, cut by COUNT or TIME, whichever first: priceoverview has
+        # been squeezed to ~2 min/item, where the count floor alone still ate the
+        # whole 600s budget and stretched the cycle to ~20 min
+        if _throttled() and (done >= THROTTLED_MIN_ENRICH
+                             or time.time() - t_enrich > THROTTLED_ENRICH_BUDGET_SEC):
             print(f"enrich: throttled (signals={THROTTLE_SIGNALS}) -> low-power, "
-                  f"stopping after {done} items", file=sys.stderr)
+                  f"stopping after {done} items / {time.time() - t_enrich:.0f}s",
+                  file=sys.stderr)
             break               # offset advances by `done` -> the lap just resumes
         hn = keys[(off + done) % n]
         v = items[hn]
