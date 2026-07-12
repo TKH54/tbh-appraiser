@@ -1,0 +1,78 @@
+name: Prune Supabase labels (manual)
+
+# On-demand prune of the Supabase labels table (labels.yml also prunes weekly).
+# Archive-first: refuses to delete any row that is not in the snapshot, and the
+# snapshot is uploaded to the labels-archive release before deleting. Used to
+# unblock collection when the 50k insert-cap trigger says "collection full".
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: "newest rows to keep in the table"
+        default: "20000"
+      dry_run:
+        description: "true = report the plan only, delete nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # release upload
+
+concurrency:
+  group: promote-labels   # never prune while labels.yml is fetching/promoting
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+
+      - name: Restore labels snapshot (Supabase delta fetch)
+        id: snaprestore
+        uses: actions/cache/restore@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
+          restore-keys: labels-snapshot-
+
+      - name: Seed snapshot from the release archive when cache missed
+        if: steps.snaprestore.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .labels_snapshot
+          gh release download labels-archive -p labels.jsonl.gz -D .labels_snapshot -R "$GITHUB_REPOSITORY" || true
+
+      - name: Sync + archive snapshot before deleting anything
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .labels_snapshot
+          python scripts/prune_labels.py --keep "${{ github.event.inputs.keep || '20000' }}" --dry-run
+          gh release view labels-archive -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create labels-archive -R "$GITHUB_REPOSITORY" --latest=false \
+              --title "Crowd-label history archive" \
+              --notes "Full gzip-JSONL history of the Supabase labels table (auto-updated by labels.yml). Rows pruned from Supabase live on here."
+          gh release upload labels-archive .labels_snapshot/labels.jsonl.gz --clobber -R "$GITHUB_REPOSITORY"
+
+      - name: Prune
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
+        run: python scripts/prune_labels.py --keep "${{ github.event.inputs.keep || '20000' }}"
+
+      - name: Save labels snapshot
+        if: always() && hashFiles('.labels_snapshot/labels.jsonl.gz') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
