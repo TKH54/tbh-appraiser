@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626q";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626q";
-import { detectPageTab } from "./detect.js?v20260626q";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626q";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709e";
+import { Matcher, _internal } from "./recognize.js?v20260626r";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626r";
+import { detectPageTab } from "./detect.js?v20260626r";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626r";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709f";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,7 +27,7 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.15";
+const APP_VERSION = "1.7.16";
 const CHANGELOG = [
   { v: "1.7.9", d: "2026/7/9",
     ja: "取引が薄く価格が当てにならない銘柄（薄商い）の扱いを改善。",
@@ -131,8 +131,11 @@ let GEX = localStorage.getItem("tbh_gex") === "1";   // gacha: drop the listing-
 // Top-3 grades the 6/25 market reopen still forbids LISTING (AUTOMATON 2026-06-23:
 // 「コズミック・ディバイン・セレスティアル級の上位3グレード…一時的に出品を制限」).
 // A spun copy can't be sold, so under GEX they contribute 0 to the spin EV.
-// Clear this set once the dev announces the staged lift.
+// The price bot watches for the lift (roadmap: 2026-07) and flips prices.json
+// "unlocked3"; UNLOCKED3 then neutralizes GEX and hides its toggle — no manual
+// step, and a stale saved tbh_gex can't keep zeroing sellable grades.
 const GACHA_RESTRICTED = new Set(["Celestial", "Divine", "Cosmic"]);
+let UNLOCKED3 = false;
 let DATA = null;        // {items, vbb, matcher, tpl, baseline, gacha, meta, prices}
 let STREAM = null, VIDEO = null;
 let SCAN = null;        // {imgW,imgH, cells:[{...item, assigned, ignored}]}
@@ -173,6 +176,7 @@ async function loadData() {
   // prices.json updates every ~10 min independently of releases -> bust by time
   try { prices = await (await fetch("data/prices.json?t=" + Date.now(), { cache: "no-store" })).json(); } catch (e) {}
   UNLOCKED = !!prices?.unlocked;   // drives the *_post copy; default mode is always 現在価格
+  UNLOCKED3 = !!prices?.unlocked3; // top-3 listing lift -> gacha GEX exclusion off
   let hist = null;   // also bot-updated every ~10 min -> time-bust, not version
   try { hist = await (await fetch("data/history.json?t=" + Date.now(), { cache: "no-store" })).json(); } catch (e) {}
   let seed = [];
@@ -223,6 +227,7 @@ async function refreshPrices() {
     if (!r.ok) return;
     DATA.prices = await r.json();
     UNLOCKED = !!DATA.prices?.unlocked;
+    UNLOCKED3 = !!DATA.prices?.unlocked3;
   } catch (e) {}
 }
 
@@ -973,14 +978,18 @@ function renderGacha() {
   $("gacha").style.display = "block";
   // the "sell" column basis is a button switchable HERE, independent of the main table
   const gcur = GMODE === "cur";
+  const gexOn = GEX && !UNLOCKED3;   // the exclusion is meaningless once listing reopens
   $("gNote").innerHTML = `${esc(t("gacha_basis"))} `
     + `<button type="button" id="gBasisBtn" class="bchip ${gcur ? "cur" : "base"}" title="${esc(t("gacha_basis_tip"))}">`
     + `${esc(gcur ? t("mode_cur") : tu("mode_base"))} ⇄</button><br>${esc(t("gacha_note"))}`
-    + (GEX ? `<div class="gex-note foot">${esc(t("gacha_ex_note"))}</div>` : "");
+    + (gexOn ? `<div class="gex-note foot">${esc(t("gacha_ex_note"))}</div>` : "");
   $("gBasisBtn").onclick = () => { GMODE = GMODE === "cur" ? "base" : "cur"; renderGacha(); };
-  // ⚖️ toggle: exclude listing-restricted top grades from the spin EV
+  // ⚖️ toggle: exclude listing-restricted top grades from the spin EV. Once the
+  // bot flags the lift (UNLOCKED3) the exclusion is moot — hide the toggle and
+  // ignore any saved GEX so every grade counts again with zero manual steps.
   const gex = $("gExBtn");
   if (gex) {
+    gex.style.display = UNLOCKED3 ? "none" : "";
     gex.textContent = GEX ? t("gacha_ex_on") : t("gacha_ex_off");
     gex.title = t("gacha_ex_tip");
     gex.classList.toggle("exon", GEX);
@@ -1003,7 +1012,7 @@ function renderGacha() {
     // GEX: a restricted-grade pull can't be listed → it's worth 0 to you now, so
     // drop its contribution (keep the odds — this is realizable EV, not renormalized).
     const spin = Object.entries(odds).reduce((s, [gr, p]) =>
-      s + (GEX && GACHA_RESTRICTED.has(gr) ? 0 : p / 100 * (gradeEV[gr] || 0)), 0);
+      s + (gexOn && GACHA_RESTRICTED.has(gr) ? 0 : p / 100 * (gradeEV[gr] || 0)), 0);
     const sellU = unitPriceIn(coin, GMODE);
     const sell = sellU != null ? sellU : null;
     rows.push({ coin, spin, sell });

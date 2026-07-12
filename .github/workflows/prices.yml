@@ -34,6 +34,10 @@ on:
         description: "market-reopened flag: 1=force on, 0=force off, empty=auto-detect"
         required: false
         default: ""
+      force_unlocked3:
+        description: "top-3-grade listing-unlock flag: 1=force on, 0=force off, empty=auto-detect"
+        required: false
+        default: ""
       shard:
         description: "items to refresh median/volume this run (empty=default 60; set high e.g. 742 for a one-shot full backfill)"
         required: false
@@ -77,6 +81,7 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}   # stale-t watchdog (phone down?)
           FORCE_UNLOCKED: ${{ github.event.inputs.force_unlocked }}
+          FORCE_UNLOCKED3: ${{ github.event.inputs.force_unlocked3 }}
           PRICES_SHARD: ${{ github.event.inputs.shard }}
           PRICES_DELAY: ${{ github.event.inputs.delay }}
           PRICES_BUDGET_SEC: ${{ github.event.inputs.budget_sec }}

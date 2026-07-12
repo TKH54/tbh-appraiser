@@ -55,6 +55,13 @@ HEARTBEAT_SLEEP = 540                    # during cooldown: nap this long then r
 #                                          not fire on this repo, so the chain self-restarts)
 HEALTHY_T_SEC = 600                      # a cron skips if the last snapshot is younger
 COOLDOWN_STEPS_MIN = [20, 40, 80, 120]   # escalating backoff on repeated failure (capped)
+FALLBACK_ALERT_GAP_SEC = 3600            # min gap between repeated local->CI fallback pings
+#                                          (a flapping phone would otherwise spam Discord)
+TOP3_RE = re.compile(r"\((Celestial|Divine|Cosmic)\)")   # top-3 listing-restricted grades
+UNLOCK3_ABS = 25                         # distinct listed top-grade items >= this -> unlocked.
+#                                          9 pre-restriction leftovers were live 2026-07-12;
+#                                          while restricted the count can only FALL, so...
+UNLOCK3_RISE = 5                         # ...any rise this big means new listings work again
 LAST_GET_ERROR = None                    # summary of the latest get() failure (logs/state)
 
 
@@ -289,6 +296,34 @@ def detect_unlocked(items: dict[str, dict]) -> bool:
     return prev_unlocked or n >= 320 or (prev_n is not None and n >= prev_n + 30)
 
 
+def _count_top3_listed(items: dict[str, dict]) -> int:
+    """DISTINCT top-3-grade items with at least one active listing. Works on both
+    the in-memory sweep shape and the persisted prices.json shape (both carry q)."""
+    return sum(1 for hn, v in items.items()
+               if TOP3_RE.search(hn) and (v.get("q") or 0) > 0)
+
+
+def detect_unlocked3(items: dict[str, dict], prev_doc: dict) -> bool:
+    """Top-3-grade (Celestial/Divine/Cosmic) LISTING-unlock flag — the roadmap says
+    the restriction lifts sometime 2026-07. While restricted, no new listing can be
+    created, so the distinct listed count can only FALL (leftover pre-restriction
+    listings selling out); a clear RISE — or topping UNLOCK3_ABS — means listing
+    works again. Sticky once true (carried over); FORCE_UNLOCKED3=1/0 overrides
+    everything (manual switch via workflow_dispatch). The site reads this as
+    prices.json "unlocked3" and drops the gacha-EV top-grade exclusion by itself."""
+    force = os.environ.get("FORCE_UNLOCKED3", "")
+    if force in ("0", "1"):
+        return force == "1"
+    if prev_doc.get("unlocked3"):
+        return True
+    n = _count_top3_listed(items)
+    prev_items = prev_doc.get("items") or {}
+    # the rise rule needs a real previous catalog to diff against — on a bootstrap
+    # run (no prior snapshot) the leftover listings alone would fake a "rise"
+    return n >= UNLOCK3_ABS or (bool(prev_items)
+                                and n >= _count_top3_listed(prev_items) + UNLOCK3_RISE)
+
+
 def display_price(v: dict, rate: float):
     """The price the site shows. Priority:
       1. m  = median of recent REAL sales (Steam priceoverview) — the true value
@@ -404,12 +439,14 @@ def fetch_fx() -> dict:
     return {"JPY": 155.0, "CNY": 7.1, "TWD": 32.0, "KRW": 1380.0, "RUB": 90.0}
 
 
-def write_snapshot(items, rate, unlocked, eoff, soff, fx) -> None:
+def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx) -> None:
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "src": SOURCE,                     # ci|local — _gate() reads this to stand down
         "rate": rate,
         "unlocked": unlocked,
+        "unlocked3": unlocked3,            # top-3 grade listing restriction lifted
+        #                                    (site auto-drops the gacha GEX exclusion)
         "_eoff": eoff,                     # rotating enrich offset (persisted)
         "_soff": soff,                     # rotating sweep offset (persisted)
         "gev": grade_averages(items, rate),
@@ -455,6 +492,91 @@ def _prev_snapshot_meta():
                 doc.get("src") or "ci")
     except Exception:
         return None, "ci"
+
+
+def _post_discord(msg: str) -> bool:
+    """Best-effort Discord ping. False when there is no webhook (the phone runner
+    has none — CI is the alerting side) or the post failed, so callers can leave
+    their dedupe flag unset and let a later CI run deliver the alert instead."""
+    hook = os.environ.get("DISCORD_WEBHOOK")
+    if not hook:
+        return False
+    try:
+        requests.post(hook, json={"content": msg}, timeout=15)
+        return True
+    except Exception as e:
+        print(f"discord alert failed: {e}", file=sys.stderr)
+        return False
+
+
+def _maybe_alert_fallback() -> None:
+    """One-shot 'the phone runner stopped and CI took over' ping. The stale-t
+    watchdog below only fires when BOTH sources are dead for hours; when the CI
+    fallback works, `t` stays fresh and the phone's death would otherwise go
+    completely unnoticed (CI = Steam-blocked IP range = degraded service, so the
+    user should still go reboot the phone). Detected at the local->ci transition:
+    a CI run that proceeds to snapshot while the LAST snapshot still says
+    src=local. Rate-limited against a flapping phone; the recovery ping is sent
+    by _standby_alerts() when the phone delivers again."""
+    if SOURCE != "ci":
+        return
+    pt, src = _prev_snapshot_meta()
+    if src != "local":
+        return
+    if pt is not None and (time.time() - pt) < LOCAL_FRESH_SEC:
+        return    # phone still delivering — this is a manual dispatch, not a takeover
+    state = _load_state()
+    try:
+        last = datetime.fromisoformat(state.get("last_fallback_alert_utc")).timestamp()
+    except Exception:
+        last = 0
+    state["fallback_active"] = True
+    if time.time() - last >= FALLBACK_ALERT_GAP_SEC:
+        age_min = int((time.time() - pt) / 60) if pt else "?"
+        if _post_discord(
+                f"📵 **スマホランナーの更新が止まったのでCIフォールバックに切替**"
+                f"（最終ローカル更新: 約{age_min}分前）。CIはSteamに弾かれやすく更新が遅れ"
+                f"がちです。スマホの電源・Wi-Fi・Termuxを確認してください（再起動で自動復旧、"
+                f"復旧すればCIは自動でスタンバイに戻ります）。"):
+            state["last_fallback_alert_utc"] = datetime.now(
+                timezone.utc).isoformat(timespec="seconds")
+    _write_state(state)
+
+
+def _standby_alerts() -> None:
+    """CI standby housekeeping (the phone is delivering again): send the recovery
+    ping if a fallback was flagged, and relay the top-3 listing-unlock alert —
+    the phone has no webhook, so it only WRITES unlocked3 into prices.json and
+    this CI side does the talking. State rides the heartbeat commit."""
+    state = _load_state()
+    dirty = False
+    if state.get("fallback_active"):
+        if _post_discord("✅ **スマホランナー復旧**。CIはスタンバイに戻りました。"):
+            state.pop("fallback_active", None)
+            state.pop("last_fallback_alert_utc", None)
+            dirty = True
+    if not state.get("unlocked3_alerted"):
+        try:
+            doc = json.loads(OUT.read_text(encoding="utf-8"))
+        except Exception:
+            doc = {}
+        if doc.get("unlocked3") and _maybe_alert_unlocked3(doc.get("items") or {}):
+            state["unlocked3_alerted"] = True
+            dirty = True
+    if dirty:
+        _write_state(state)
+
+
+def _maybe_alert_unlocked3(items: dict[str, dict]) -> bool:
+    """The 'top-3 grades are listable again' ping (roadmap: sometime 2026-07).
+    Returns True once actually delivered so the caller can set the dedupe flag."""
+    n = _count_top3_listed(items)
+    return _post_discord(
+        f"🔓 **上位3グレード（セレスティアル/ディバイン/コズミック）の出品解禁を検知**"
+        f"（出品中の該当アイテム: {n}種）。サイトのガチャEVは自動で全グレード込みに切替"
+        f"済みです。高額コインのプレミアムが圧縮される局面なので、コインの売却/回すの"
+        f"判断はお早めに。誤検知なら `gh workflow run prices.yml -f force_unlocked3=0` "
+        f"で戻せます。")
 
 
 def _maybe_alert_stale() -> None:
@@ -521,6 +643,8 @@ def _gate() -> str:
     if src == "local" and pt is not None and (now - pt) < LOCAL_FRESH_SEC:
         print(f"gate: local runner delivering (t {int((now - pt) / 60)}min old) "
               f"-> CI standby, heartbeat after {HEARTBEAT_SLEEP}s nap", file=sys.stderr)
+        _standby_alerts()               # phone-recovery ping + unlocked3 relay (CI
+        #                                 has the webhook; the phone only writes data)
         time.sleep(HEARTBEAT_SLEEP)
         return "heartbeat"
     cd = float(_load_state().get("cooldown_until", 0) or 0)
@@ -573,12 +697,15 @@ def _on_failure() -> None:
 
 def _on_success() -> None:
     """Clear the cooldown after a good sweep. Only rewrite state if it actually
-    changed (was failing), to avoid churning price_state.json every healthy run."""
+    changed (was failing), to avoid churning price_state.json every healthy run.
+    UPDATE, don't replace: state also carries the alert-dedupe flags
+    (fallback_active/unlocked3_alerted), which a wholesale rewrite would wipe."""
     state = _load_state()
     if state.get("consecutive_failures") or state.get("cooldown_until"):
-        _write_state({"consecutive_failures": 0, "cooldown_until": 0,
+        state.update({"consecutive_failures": 0, "cooldown_until": 0,
                       "last_recovered_utc":
                           datetime.now(timezone.utc).isoformat(timespec="seconds")})
+        _write_state(state)
     _set_mode("snapshot")
 
 
@@ -598,6 +725,8 @@ def main() -> None:
     # median/volume carried too. Written + ready to push in minutes, so
     # prices.json `t` advances every cycle even if the detail phase below is
     # slow or dies.
+    _maybe_alert_fallback()   # CI proceeding while the last snapshot says local
+    #                           = the phone just went quiet -> one-shot ping
     try:
         prev_doc = json.loads(OUT.read_text(encoding="utf-8"))
     except Exception:
@@ -612,11 +741,12 @@ def main() -> None:
     rate = sane_rate(derive_rate(fresh), prev_doc.get("rate"), fx.get("JPY"))
     items = merge_carry(fresh, prev_doc)
     unlocked = detect_unlocked(items)      # reads previous OUT
+    unlocked3 = detect_unlocked3(items, prev_doc)
     prev_off = int(prev_doc.get("_eoff", 0) or 0)
     carry_mv_baseline(items, prev_doc)     # carry prev median/volume onto all items
     carry_last_median(items, rate)
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, prev_off, soff, fx)
+    write_snapshot(items, rate, unlocked, unlocked3, prev_off, soff, fx)
     print(f"fast snapshot: {len(fresh)} fresh (_soff {prev_doc.get('_soff', 0) or 0}"
           f"->{soff}) / {len(items)} items, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s", file=sys.stderr)
@@ -631,11 +761,19 @@ def main() -> None:
         eoff = prev_off
     carry_last_median(items, rate)         # apply lm to the freshly enriched items
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, eoff, soff, fx)
+    write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx)
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
-          f"_eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
+          f"unlocked3 {unlocked3}, _eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s")
     _on_success()
+    # unlock ping from a CI-proceed run (fallback mode); in the normal phone-primary
+    # regime the CI standby relays it instead (_standby_alerts — the phone has no
+    # webhook, so _post_discord returns False there and the flag stays unset)
+    if unlocked3:
+        state = _load_state()
+        if not state.get("unlocked3_alerted") and _maybe_alert_unlocked3(items):
+            state["unlocked3_alerted"] = True
+            _write_state(state)
 
 
 if __name__ == "__main__":
