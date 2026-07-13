@@ -396,6 +396,13 @@ function hueToRarity(hue, s, v) {
     if (name === "Legendary" && s < DIV_S_MAX && v > DIV_V_MIN) return "Divine";
     return name;
   }
+  // Divine's actual ring (game asset ItemSlot_GradeBg_DIVINE border strip) sits at
+  // hue ≈23-24 — just PAST Legendary's band into the 23-34 gap — so the in-band
+  // Divine gate above never fired and Divine read as "?" (unknown). Extend the
+  // pale+bright gold gate a little into the gap; deep-saturated oranges (hue 23-27
+  // with S≥175 or dark) still return null, so nothing that used to resolve to a
+  // grade can flip.
+  if (hue >= 23 && hue <= 27 && s < DIV_S_MAX && v > DIV_V_MIN) return "Divine";
   return null;
 }
 
@@ -411,17 +418,33 @@ function borderRarity(cell) {
   const { w, h, data } = cell;
   const t = Math.max(2, Math.floor(0.08 * w));
   const votes = new Map();
-  let total = 0;
+  let total = 0, pos = 0, paleCel = 0;
   const sample = (x, y) => {
     const o = (y * w + x) * 3;
     const [hh, s, v] = bgr2hsv(data[o], data[o + 1], data[o + 2]);
-    if (s <= 80 || v <= 60) return;
+    pos++;
+    if (s <= 80 || v <= 60) {
+      // Celestial's ring is a PALE bright cyan (game asset border strip:
+      // H≈96-98, S≈19-37, V≈245-250) — the s>80 chroma gate above throws away
+      // the ENTIRE ring, total stays 0, and a real Celestial falls through to
+      // the "Common" fallback (hit live: Dragonite Crystal, a Celestial
+      // material, read as Common). Count pale-cyan pixels separately here and
+      // only believe them when they DOMINATE the strip (>=30% of all sampled
+      // positions below): a gray Common ring has S≈0 and fails s>=15, and a
+      // pale icon tip poking into the strip can't reach 30% of it.
+      if (hh >= 85 && hh <= 125 && s >= 15 && v >= 200) paleCel++;
+      return;
+    }
     total++;
     const r = hueToRarity(hh, s, v);
     if (r) votes.set(r, (votes.get(r) || 0) + 1);
   };
   for (let y = 0; y < t; y++) for (let x = 0; x < Math.floor(w * 0.60); x++) sample(x, y);
   for (let y = 0; y < Math.floor(h * 0.60); y++) for (let x = 0; x < t; x++) sample(x, y);
+  if (paleCel >= 5 && paleCel >= pos * 0.30) {
+    votes.set("Celestial", (votes.get("Celestial") || 0) + paleCel);
+    total += paleCel;
+  }
   if (total < 5) return "Common";
   // Cosmic's fiery border is the ONLY grade that mixes RED (Immortal-band) and GOLD
   // (Legendary/Divine-band) pixels in a single frame — measured from the game's
