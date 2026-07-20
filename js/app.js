@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626s";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626s";
-import { detectPageTab } from "./detect.js?v20260626s";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626s";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709g";
+import { Matcher, _internal } from "./recognize.js?v20260626t";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626t";
+import { detectPageTab } from "./detect.js?v20260626t";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626t";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709h";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,8 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.17";
+const APP_VERSION = "1.7.18";
 const CHANGELOG = [
+  { v: "1.7.18", d: "2026/7/20",
+    ja: "価格更新が長時間止まった際の警告を改善：配信基盤（GitHub）側の障害が公式に確認できた場合は、その旨と稼働状況へのリンクを表示するようにしました。",
+    en: "Improved the stale-price alert: when an outage on the delivery platform (GitHub) is officially confirmed, the banner now says so and links to the status page." },
   { v: "1.7.17", d: "2026/7/13",
     ja: "セレスティアル等級のアイテム（ドラゴナイトクリスタル等）がコモンと誤認識される問題を修正。あわせてディバイン等級が「?」と判定されるケースも修正しました。",
     en: "Fixed Celestial-grade items (e.g. Dragonite Crystal) being misread as Common, and Divine-grade borders coming back as “?”." },
@@ -238,13 +241,36 @@ async function refreshPrices() {
 // The price bot advances DATA.prices.t every ~8 min. If it hasn't moved in a long
 // while, the price chain has stalled — usually the automatic price update itself
 // (the Steam sweep being rate-limited on the CI runner, or a GitHub Actions/Pages
-// delay), NOT a bug in this tool. Say so plainly WITHOUT pinning blame on any one
-// service (CI stays green while Steam throttles, so "GitHub outage" was misleading).
-// Purely client-side (no network, CSP-safe), so it still fires even when the site
-// itself is served stale from the CDN cache during an outage.
+// delay), NOT a bug in this tool. The base message stays neutral WITHOUT pinning
+// blame on any one service (CI stays green while Steam throttles, so a hardcoded
+// "GitHub outage" was misleading). The base banner is purely client-side
+// (no network, CSP-safe), so it still fires even when the site itself is served
+// stale from the CDN cache during an outage. On top of that, ONLY while the banner
+// is up, the official GitHub status API is probed: if it confirms an outage in a
+// component this site depends on, one extra line names GitHub as the cause
+// (2026-07-20 Actions outage: pushes landed but Pages never redeployed).
 const STALE_MIN = 40;               // minutes since last snapshot -> show the alert
 //   (the price bot runs a ~10-min polite chain; 40 min = a few missed cycles, so the
 //   banner flags a real stall rather than false-alarming on normal cadence jitter)
+// The delivery pipeline = phone runner -> git push -> Actions -> Pages, and status
+// checks via the API; ANY of these being degraded can stall the published prices.
+const GH_STATUS_URL = "https://www.githubstatus.com/api/v2/summary.json";
+const GH_COMPONENTS = ["Actions", "Pages", "API Requests", "Git Operations"];
+const GH_PROBE_TTL = 5 * 60000;     // re-probe at most every 5 min while stale
+let _ghProbe = { at: 0, outage: false };
+async function probeGithubOutage() {
+  if (Date.now() - _ghProbe.at < GH_PROBE_TTL) return _ghProbe.outage;
+  _ghProbe.at = Date.now();         // set BEFORE the fetch so a dead endpoint isn't hammered
+  try {
+    const r = await fetch(GH_STATUS_URL, { cache: "no-store" });
+    if (r.ok) {
+      const s = await r.json();
+      _ghProbe.outage = (s.components || []).some(c =>
+        GH_COMPONENTS.includes(c.name) && c.status && c.status !== "operational");
+    }
+  } catch (e) { /* status page unreachable -> keep the last (default: no) answer */ }
+  return _ghProbe.outage;
+}
 let _staleDismissed = false;
 function checkStale() {
   const el = $("staleAlert");
@@ -257,6 +283,14 @@ function checkStale() {
     `<span class="x" id="staleX" title="${esc(t("stale_dismiss"))}">✕</span>`
     + esc(t("stale_alert")(ageMin));
   $("staleX").onclick = () => { _staleDismissed = true; el.style.display = "none"; };
+  // render the neutral banner first, then append the GitHub line only if the
+  // official status page confirms it (never claim an outage on a failed probe)
+  probeGithubOutage().then(outage => {
+    if (!outage || _staleDismissed || $("staleGh") || el.style.display === "none") return;
+    el.insertAdjacentHTML("beforeend",
+      `<br><span id="staleGh">${esc(t("stale_github"))} ` +
+      `<a href="https://www.githubstatus.com/" target="_blank" rel="noopener">${esc(t("stale_status"))}</a></span>`);
+  });
 }
 // returning to a long-open tab: re-fetch prices first, THEN judge freshness, so a
 // tab left open while the bot is healthy doesn't false-alarm on its stale in-memory t.

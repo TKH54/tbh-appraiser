@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- CSP: scripts only from self + GoatCounter (no inline scripts exist, so an
      injected <script> is blocked); network limited to our data, Supabase
-     (insert-only crowd labels) and GoatCounter; images to self + Steam's CDN +
+     (insert-only crowd labels), GoatCounter and githubstatus.com (read-only
+     outage probe for the stale-price banner); images to self + Steam's CDN +
      blob/data (canvas & stock thumbnails). Hardens against XSS/injection. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://gc.zgo.at; connect-src 'self' https://ebtaabxbfracykncjhfc.supabase.co https://tbh-appraiser.goatcounter.com https://gc.zgo.at; img-src 'self' https://*.steamstatic.com https://*.akamaihd.net data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://gc.zgo.at; connect-src 'self' https://ebtaabxbfracykncjhfc.supabase.co https://tbh-appraiser.goatcounter.com https://gc.zgo.at https://www.githubstatus.com; img-src 'self' https://*.steamstatic.com https://*.akamaihd.net data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'; object-src 'none'">
 <title>TBH 倉庫まるごと査定 — Warehouse Appraiser for Task Bar Hero</title>
 <meta name="description" content="ゲーム画面を映すだけで Task Bar Hero の倉庫を丸ごと読み取り、全アイテムをSteamマーケット相場で自動査定する非公式ツール。インストール不要・画像はブラウザ内で処理され送信されません。">
 <style>
@@ -405,7 +406,7 @@
 
   <!-- demo hero: shows what a finished appraisal looks like (hidden once you scan) -->
   <div id="hero" style="display:none; margin:.8rem 0;">
-    <img id="heroImg" src="assets/demo.png?v20260626s" alt="demo"
+    <img id="heroImg" src="assets/demo.png?v20260626t" alt="demo"
          style="max-width:min(100%, 60rem); border-radius:.8rem; border:3px solid #7048e8;
                 box-shadow:0 0 .8rem rgba(112,72,232,.45), 0 .4rem 1.5rem rgba(0,0,0,.45);">
     <div class="foot" id="heroCap" style="margin-top:.3rem;"></div>
@@ -515,7 +516,7 @@
     <div id="tUnofficial" style="margin-top:.3rem;"></div>
   </footer>
 
-<script type="module" src="js/app.js?v20260709j"></script>
+<script type="module" src="js/app.js?v20260709k"></script>
 <!-- visit counting: GoatCounter — no cookies, no personal data, skips localhost.
      Dashboard: https://tbh-appraiser.goatcounter.com -->
 <script data-goatcounter="https://tbh-appraiser.goatcounter.com/count"
