@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626t";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626t";
-import { detectPageTab } from "./detect.js?v20260626t";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626t";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709h";
+import { Matcher, _internal } from "./recognize.js?v20260626u";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626u";
+import { detectPageTab } from "./detect.js?v20260626u";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626u";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709i";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,7 +27,7 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.18";
+const APP_VERSION = "1.7.19";
 const CHANGELOG = [
   { v: "1.7.18", d: "2026/7/20",
     ja: "価格更新が長時間止まった際の警告を改善：配信基盤（GitHub）側の障害が公式に確認できた場合は、その旨と稼働状況へのリンクを表示するようにしました。",
