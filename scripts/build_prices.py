@@ -108,13 +108,19 @@ def _throttled() -> bool:
     return THROTTLE_SIGNALS >= THROTTLED_AT
 
 
-def get(url, **params):
+def get(url, *, max_attempts=None, **params):
+    """`max_attempts` caps the retry chain for cheap probe requests (see
+    enrich_shard): a capped call also skips the trailing backoff on its LAST
+    attempt, since nothing follows it — an uncapped call keeps the original
+    pacing untouched."""
     global LAST_GET_ERROR, THROTTLE_SIGNALS
-    for attempt in range(5):
+    tries = max_attempts or 5
+    for attempt in range(tries):
         if attempt >= THROTTLED_GET_ATTEMPTS and _throttled():
             print(f"  get: throttled -> giving up after {attempt} attempts",
                   file=sys.stderr)
             return None
+        pointless_backoff = max_attempts is not None and attempt == tries - 1
         t_req = time.time()
         try:
             r = S.get(url, params=params, timeout=20)
@@ -122,7 +128,8 @@ def get(url, **params):
             LAST_GET_ERROR = type(e).__name__            # Timeout / ConnectionError / ...
             THROTTLE_SIGNALS += 1
             print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
-            time.sleep(min(15 * (attempt + 1), 30))
+            if not pointless_backoff:
+                time.sleep(min(15 * (attempt + 1), 30))
             continue
         if time.time() - t_req > SLOW_REQ_SEC:           # tarpit: slow even when it works
             THROTTLE_SIGNALS += 1
@@ -138,7 +145,8 @@ def get(url, **params):
             LAST_GET_ERROR = f"HTTP {r.status_code}" + (f" Retry-After={ra}" if ra else "")
             print(f"  get retry {attempt}: {LAST_GET_ERROR}", file=sys.stderr)
         THROTTLE_SIGNALS += 1
-        time.sleep(min(15 * (attempt + 1), 30))   # back off on 429/5xx, capped
+        if not pointless_backoff:
+            time.sleep(min(15 * (attempt + 1), 30))   # back off on 429/5xx, capped
     return None
 
 
@@ -287,8 +295,8 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     """DETAILED update: refresh median (m) + 24h volume (v) for a small ROTATING
     SHARD via per-item priceoverview, then advance the persisted offset (`_eoff`).
 
-    The catalog is ~740 items; a full per-item pass is far too slow for a ~10-min
-    job, so each run only touches PRICES_SHARD items (default 60) starting at the
+    The catalog is ~915 items; a full per-item pass is far too slow for a ~10-min
+    job, so each run only touches PRICES_SHARD items (default 25) starting at the
     saved offset. The whole catalog therefore cycles every ceil(N/shard) runs
     (~1h) while the cheap sweep keeps EVERY item's lowest ask/listing fresh each
     run. Carried-but-not-refreshed items keep their previous m/v (set by
@@ -309,6 +317,17 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     off = int(prev_doc.get("_eoff", 0) or 0) % n
     done = refreshed = 0
     t_enrich = time.time()
+    # Steam squeezes priceoverview INDEPENDENTLY of search/render (2026-08-02:
+    # sweep fully healthy at 150 fresh items, yet every enrich item 429'd —
+    # `attempted=3 refreshed=0` per cycle, 145s of pure retry-backoff feeding the
+    # very bucket that was empty). When the run is throttled BEFORE enrich even
+    # starts, the count/time floors are the wrong tool: they buy nothing and cost
+    # the most. Spend ONE uncapped-retry-free probe instead — recovery is still
+    # noticed every single cycle, but a live squeeze now costs ~1 request.
+    probing = _throttled()
+    if probing:
+        print(f"enrich: throttled on entry (signals={THROTTLE_SIGNALS}) -> "
+              f"probing priceoverview with 1 request", file=sys.stderr)
     while done < shard and done < n and time.time() < deadline:
         # under throttle, cut by COUNT or TIME, whichever first: priceoverview has
         # been squeezed to ~2 min/item, where the count floor alone still ate the
@@ -322,7 +341,18 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
         hn = keys[(off + done) % n]
         v = items[hn]
         d = get("https://steamcommunity.com/market/priceoverview/",
-                appid=APPID, currency=8, market_hash_name=hn)
+                appid=APPID, currency=8, market_hash_name=hn,
+                max_attempts=1 if probing else None)
+        if probing:
+            if not d or not d.get("success"):
+                print(f"enrich: probe failed ({LAST_GET_ERROR}) -> priceoverview "
+                      f"still squeezed, skipping enrich this cycle "
+                      f"(offset stays {off}, m/v keep carried values)",
+                      file=sys.stderr)
+                return off          # nothing attempted -> nothing to skip past
+            probing = False         # answering again -> resume the normal shard
+            print("enrich: probe ok -> priceoverview answering, resuming shard",
+                  file=sys.stderr)
         time.sleep(delay)
         done += 1
         if not d or not d.get("success"):
