@@ -36,8 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      # Static URL: the deploy step is retried (see below) so no single step id is
-      # guaranteed to hold page_url; the site URL is fixed anyway.
+      # Static URL: the deploy step is continue-on-error (see below) so page_url
+      # isn't guaranteed to be set; the site URL is fixed anyway.
       url: https://tkh54.github.io/tbh-appraiser/
     steps:
       - uses: actions/checkout@v5
@@ -52,37 +52,68 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
-      # actions/deploy-pages intermittently returns "Deployment failed, try again
-      # later." from the Pages backend when deploys arrive in quick succession
-      # (our ~10-min data pushes): the concurrency group serialises the *jobs*,
-      # but the backend can still be settling the previous deployment when the
-      # next one is created. It's transient — a retry almost always wins — but an
-      # unretried failure marks the run red and spams a FAILURE email. So try up
-      # to 3 times (with a short settle delay), and only let the run go red if a
-      # genuine, persistent error survives all attempts. Site content is
-      # unchanged either way; each attempt redeploys the same artifact.
-      - id: deploy1
+      # ONE attempt, 5-min cap. Retrying in-run is provably useless: a Pages
+      # deployment's ID *is* the commit SHA, and on timeout deploy-pages cancels
+      # its own deployment — so re-creating the same SHA returns an instant
+      # "Deployment cancelled." (2026-08-06: three retries, three instant
+      # cancels). Recovery comes from the NEXT push instead, which carries a new
+      # SHA; the price bot pushes every ~10 min, so that is the natural retry.
+      # The 5-min cap (was 10) matters: a 10-min stall outlasted the push
+      # interval, so runs piled up in the concurrency queue and the jam became
+      # self-sustaining.
+      - id: deploy
         uses: actions/deploy-pages@v4
         continue-on-error: true
-      - name: Settle before retry 1
-        if: steps.deploy1.outcome == 'failure'
-        run: sleep 30
-      - id: deploy2
-        if: steps.deploy1.outcome == 'failure'
-        uses: actions/deploy-pages@v4
-        continue-on-error: true
-      - name: Settle before retry 2
-        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
-        run: sleep 45
-      - id: deploy3
-        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        with:
+          timeout: 300000
 
-      - name: Notify Discord on failure
-        if: failure()
+      # A stalled Pages backend WEDGES the whole pipeline: deploy-pages cancels
+      # its deployment on timeout, but the backend can still hold it "in
+      # progress", so every later run dies with
+      #   HTTP 400 ... due to in progress deployment. Please cancel <SHA> first
+      # and the site freezes on the last good build until a human clears it by
+      # hand via the API (2026-08-06 incident — the site sat 55+ min stale).
+      # So on failure, clear our own deployment plus those of recent older
+      # commits, which is what unblocks the next push. Only runs when the deploy
+      # actually failed, so a healthy deploy never touches a live deployment;
+      # cancelling an already-finished deployment just errors and is ignored.
+      - name: Clear wedged Pages deployments
+        if: steps.deploy.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          for sha in $(gh api "repos/$REPO/commits?sha=main&per_page=6" --jq '.[].sha'); do
+            if gh api -X POST "repos/$REPO/pages/deployments/$sha/cancel" >/dev/null 2>&1; then
+              echo "cleared wedged deployment $sha"
+            fi
+          done
+
+      # Alert on the thing that actually matters — the site being STALE — not on
+      # a red deploy step. A single failed deploy is harmless because the next
+      # push redeploys ~10 min later, and the old alert cried "反映が停止した可能性"
+      # every time, which trained us to ignore it. Only ring (and only then let
+      # the run go red) once the LIVE site is genuinely behind, using the same
+      # 45-min gate the price chain uses.
+      - name: Check live freshness / alert only if the site is really stale
+        if: steps.deploy.outcome == 'failure'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          jq -n --arg c "❌ **Pagesデプロイが失敗**（3回リトライ後）。サイトへの反映が停止した可能性 → $RUN_URL" '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+          LIVE_T=$(curl -fsSL --max-time 30 "https://tkh54.github.io/tbh-appraiser/data/prices.json" | jq -r '.t' || echo "")
+          if [ -z "$LIVE_T" ] || [ "$LIVE_T" = "null" ]; then
+            AGE=999   # can't read the site at all -> treat as broken
+          else
+            AGE=$(( ( $(date -u +%s) - $(date -u -d "$LIVE_T" +%s) ) / 60 ))
+          fi
+          echo "live data age: ${AGE} min"
+          if [ "$AGE" -lt 45 ]; then
+            echo "::warning::Pages deploy failed but the live site is only ${AGE} min old; the next push should redeploy it."
+            exit 0
+          fi
+          if [ -n "$DISCORD_WEBHOOK" ]; then
+            jq -n --arg c "❌ **サイトのデータが${AGE}分前で止まっています**（Pagesデプロイが継続失敗）→ $RUN_URL" \
+              '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+          fi
+          exit 1

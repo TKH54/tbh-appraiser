@@ -35,7 +35,16 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 is REQUIRED here. create-pull-request pushes the PR branch
+      # with --force-with-lease, which needs the remote branch's tip in local
+      # refs to compute the lease. crowd-labels/auto-promote survives each merge
+      # (GitHub only auto-deletes head branches when that repo setting is on), so
+      # on a shallow clone the lease has nothing to compare against and the push
+      # is rejected with "! [rejected] ... (stale info)" — which is exactly how
+      # this job died silently from 2026-08-03, stranding 36 promotions.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
