@@ -52,6 +52,7 @@ on:
         default: ""
 permissions:
   contents: write
+  actions: write                  # cancel a pages-deploy run stuck in `waiting`
 concurrency:
   group: prices                   # exactly one running + one pending; extras are replaced
   cancel-in-progress: false
@@ -63,6 +64,29 @@ jobs:
                                  # Tight enough that a truly stuck run is killed
                                  # fast so the chain self-heals.
     steps:
+      # WATCHDOG for a pages-deploy run stuck in `waiting`. On 2026-08-06 one
+      # sat in `waiting` on the github-pages environment for 7+ hours; because
+      # it held the `pages` concurrency group, every later deploy was cancelled
+      # while still pending and the SITE FROZE for 8 hours (the price chain kept
+      # committing fresh data the whole time, so nothing else looked wrong).
+      # It is never a legitimate gate here: that environment has no required
+      # reviewers and no wait timer, and `pending_deployments` came back with an
+      # empty reviewers list, so literally nobody could approve it. This job is
+      # in a DIFFERENT concurrency group and runs every ~10 min, so it is the
+      # one place that can still act while `pages` is jammed. 15 min of grace
+      # keeps it clear of any normal queueing.
+      - name: Unstick pages-deploy runs stuck in `waiting`
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          cutoff=$(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          gh api "repos/$REPO/actions/workflows/pages.yml/runs?status=waiting&per_page=20" \
+            --jq ".workflow_runs[] | select(.created_at < \"$cutoff\") | .id" | while read -r id; do
+              echo "cancelling pages-deploy run $id stuck in waiting since before $cutoff"
+              gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null 2>&1 || true
+            done
+
       - uses: actions/checkout@v5
         with:
           ssh-key: ${{ secrets.DEPLOY_KEY }}   # push via SSH so the push event fires
