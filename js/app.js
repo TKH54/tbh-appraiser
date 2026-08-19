@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626x";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626x";
-import { detectPageTab } from "./detect.js?v20260626x";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626x";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709l";
+import { Matcher, _internal } from "./recognize.js?v20260626y";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626y";
+import { detectPageTab } from "./detect.js?v20260626y";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626y";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709m";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,8 +27,11 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.22";
+const APP_VERSION = "1.7.23";
 const CHANGELOG = [
+  { v: "1.7.23", d: "2026/8/19",
+    ja: "最上位素材6種（原初の樹液・深淵の真珠ほか）を査定に対応。記念コインの期待値に「典型」を併記しました。",
+    en: "Added 6 top-tier materials (Primordial Sap, Abyssal Pearl and others). Anniversary-coin EV now shows a “typical” value next to the average." },
   { v: "1.7.18", d: "2026/7/20",
     ja: "価格更新が長時間止まった際の警告を改善：配信基盤（GitHub）側の障害が公式に確認できた場合は、その旨と稼働状況へのリンクを表示するようにしました。",
     en: "Improved the stale-price alert: when an outage on the delivery platform (GitHub) is officially confirmed, the banner now says so and links to the status page." },
@@ -377,6 +380,37 @@ function unitPriceIn(hash, mode) {  // 1個の価格 in a SPECIFIC basis (JPY)
   return realUnit(p);
 }
 function unitPrice(hash) { return unitPriceIn(hash, MODE); }   // main table -> global toggle
+
+// Per-grade MEDIAN over " (Grade) A" gear, mirroring the bot's grade_averages()
+// (same population, same n>=3 bar) but the middle instead of the mean.
+// WHY: the bot ships per-grade MEANS ("gev") and a mean is the textbook EV — but
+// since the top-3 grades started trading (2026-07-22) their price distribution is
+// violently right-skewed: a handful of Ethereal/Eclipse accessories carry most of
+// the average while the bulk of the grade sits at the Steam floor. Measured
+// 2026-08-19: Cosmic mean ¥5,611 vs median ¥1,864, top 20% of items = 73% of the
+// mean. So ONE spin lands near the median far more often than near the mean.
+// The mean stays the headline (and owns the verdict); this drives a "typical"
+// second line so the EV isn't read as a promise. Same basis switch as the table.
+const GRADE_A_RE = /^.+ \((\w+)\) A$/;
+function gradeMedians(mode) {
+  const by = new Map();
+  for (const hash of Object.keys(DATA.items)) {
+    const m = GRADE_A_RE.exec(hash);
+    if (!m) continue;
+    const u = unitPriceIn(hash, mode);
+    if (u == null) continue;
+    if (!by.has(m[1])) by.set(m[1], []);
+    by.get(m[1]).push(u);
+  }
+  const out = {};
+  for (const [g, xs] of by) {
+    if (xs.length < 3) continue;                 // too thin to characterise — leave it to gev
+    xs.sort((a, b) => a - b);
+    const n = xs.length;
+    out[g] = n % 2 ? xs[(n - 1) / 2] : (xs[n / 2 - 1] + xs[n / 2]) / 2;
+  }
+  return out;
+}
 
 // 24h price trend from history.json: current price vs the recorded point
 // nearest 24h ago (needs one within ±6h of that mark). Only meaningful on
@@ -1042,17 +1076,23 @@ function renderGacha() {
   const gradeEV = (gcur && DATA.prices?.gev)
     ? { ...g.grade_ev_baseline, ...DATA.prices.gev }
     : g.grade_ev_baseline;
+  // ...and the same EV over per-grade MEDIANS = the "typical" single-spin outcome
+  // (see gradeMedians). Falls back to the mean per grade when a grade is too thin.
+  const gradeMed = gradeMedians(GMODE);
   const rows = [];
   for (const [coin, odds] of Object.entries(g.coins)) {
     // show Steam market prices (gross) so they match the store; the 15% sell fee
     // hits BOTH spin gear and the coin equally, so the verdict is unchanged.
     // GEX: a restricted-grade pull can't be listed → it's worth 0 to you now, so
     // drop its contribution (keep the odds — this is realizable EV, not renormalized).
-    const spin = Object.entries(odds).reduce((s, [gr, p]) =>
-      s + (gexOn && GACHA_RESTRICTED.has(gr) ? 0 : p / 100 * (gradeEV[gr] || 0)), 0);
+    const contrib = (tab, gr, p) =>
+      gexOn && GACHA_RESTRICTED.has(gr) ? 0 : p / 100 * (tab[gr] || 0);
+    const spin = Object.entries(odds).reduce((s, [gr, p]) => s + contrib(gradeEV, gr, p), 0);
+    const spinTyp = Object.entries(odds).reduce((s, [gr, p]) =>
+      s + contrib({ ...gradeEV, ...gradeMed }, gr, p), 0);
     const sellU = unitPriceIn(coin, GMODE);
     const sell = sellU != null ? sellU : null;
-    rows.push({ coin, spin, sell });
+    rows.push({ coin, spin, spinTyp, sell });
   }
   // sell-freeze gate: while you can't list, a 回す/売る verdict isn't actionable
   // (and the freeze price will normalize on reopening), so show 回す EV only and
@@ -1066,10 +1106,15 @@ function renderGacha() {
     const verdict = !sellable ? `<span class="muted">${esc(t("gacha_locked"))}</span>`
       : (spinWins ? `<span class="verdict-spin">🎰 ${esc(t("gacha_verdict_spin"))}</span>`
                   : `<span class="verdict-sell">💰 ${esc(t("gacha_verdict_sell"))}</span>`);
+    // the mean is skewed by a thin, pricey tail -> show the typical (median-based)
+    // outcome underneath whenever it is materially lower, so the EV reads as a
+    // range rather than a promise. The verdict still follows the mean.
+    const typ = r.spinTyp < r.spin * 0.9
+      ? `<div class="foot" title="${esc(t("gacha_typ_tip"))}">${esc(t("gacha_typ"))} ${yen(r.spinTyp)}</div>` : "";
     return `<tr data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.coin)}" loading="lazy" alt="">
         <a class="name" href="${marketUrl(r.coin)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.coin))}</a></td>
-      <td>${yen(r.spin)}<span class="foot">${esc(t("gacha_per"))}</span></td>
+      <td>${yen(r.spin)}<span class="foot">${esc(t("gacha_per"))}</span>${typ}</td>
       <td>${sellCell}</td>
       <td class="l">${verdict}</td>
     </tr>`;

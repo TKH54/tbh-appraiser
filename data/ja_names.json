@@ -295,7 +295,13 @@
   "Moonstone": "月長石",
   "Kraken Ink": "クラーケンインク",
   "Abyssal Mucus": "深淵の粘液",
-  "Celestial Pearl": "セレスティアルパール"
+  "Celestial Pearl": "セレスティアルパール",
+  "Primordial Sap": "原初の樹液",
+  "Abyssal Pearl": "深淵の真珠",
+  "Eldritch Venom": "異界の毒",
+  "Mithril Ore": "ミスリル鉱石",
+  "Ethereal Ingot": "エーテルインゴット",
+  "Void Crystal": "ヴォイドクリスタル"
  },
  "rarities": {
   "Common": "コモン",
