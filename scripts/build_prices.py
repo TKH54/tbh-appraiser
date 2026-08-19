@@ -277,10 +277,19 @@ def sane_rate(derived, prev_rate, fx_jpy):
 
 def carry_mv_baseline(items: dict[str, dict], prev_doc: dict) -> None:
     """Carry last known median (m) + 24h volume (v) onto every item from the
-    previous snapshot. These are 24h aggregates kept <~1h fresh by the rotating
-    enrich below, so the carried median keeps its fresh (m) label. Run BEFORE the
-    fast write so the early snapshot already carries detail data, then enrich_shard
-    overwrites just this run's slice."""
+    previous snapshot. Run BEFORE the fast write so the early snapshot already
+    carries detail data, then enrich_shard overwrites just this run's slice.
+
+    ⚠ The carried value keeps its `m` (fresh-median) label with NO age attached,
+    and consumers lean on that: realUnit() prefers m over the live ask, and
+    priceThin() never badges an item that has one. That was written when the
+    enrich lap was ~1h; the lap is now ~13h (see enrich_shard), so an `m` can be
+    that old. In practice it is not a regression -- the lap was already 4h of
+    coverage followed by an 8h+ 429 lockout, so m was stale for longer and less
+    predictably -- and realUnit's crash override still catches a market that
+    falls away from a stale median on a DEEP ask book. But it does mean `m` is
+    a "last known sale", not a fresh one. Attaching an age here (and letting the
+    UI degrade on it) is the real fix if this ever bites."""
     prev = prev_doc.get("items", {})
     for hn, v in items.items():
         pv = prev.get(hn)

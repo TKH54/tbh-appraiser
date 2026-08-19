@@ -20,7 +20,10 @@
 #
 # Stop the chain: Actions tab -> price-snapshot -> "..." -> Disable workflow.
 # Force a run now: Run workflow (bypasses cooldown/pacing).
-# One-shot full median/volume backfill: Run workflow with shard=912 delay=5.0.
+# One-shot full median/volume backfill: shard=912 delay=5.0 needs budget_sec
+# raised too (912*5s = ~76min); at the default budget_sec=600 the run just
+# does ~120 items and the offset resumes next cycle. Steam will 429 long
+# before a real full pass completes -- prefer letting the rotation do it.
 name: price-snapshot
 on:
   push:
