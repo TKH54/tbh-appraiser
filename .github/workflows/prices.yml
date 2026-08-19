@@ -3,7 +3,9 @@
 #   1. FAST: sweep EVERY item's lowest ask + listing count and write prices.json —
 #      so the displayed `t` advances (~10-min healthy cadence).
 #   2. DETAIL: refresh median + 24h volume for a small rotating shard (PRICES_SHARD,
-#      default 25) — the whole catalog cycles over a few hours.
+#      default 12) — the whole catalog cycles over ~half a day. Deliberately
+#      slow: priceoverview 429s the whole IP for ~8h if pushed past ~150 req/h
+#      (measured 2026-08-19), and a blind window costs more than a fast lap.
 #
 # Cadence model (see scripts/build_prices.py _gate/_on_failure/_heartbeat):
 #   - The chain is a SELF-RESTARTING loop: every push (deploy-key SSH) fires the next
@@ -18,7 +20,7 @@
 #
 # Stop the chain: Actions tab -> price-snapshot -> "..." -> Disable workflow.
 # Force a run now: Run workflow (bypasses cooldown/pacing).
-# One-shot full median/volume backfill: Run workflow with shard=742 delay=3.0.
+# One-shot full median/volume backfill: Run workflow with shard=912 delay=5.0.
 name: price-snapshot
 on:
   push:
@@ -39,11 +41,11 @@ on:
         required: false
         default: ""
       shard:
-        description: "items to refresh median/volume this run (empty=default 60; set high e.g. 742 for a one-shot full backfill)"
+        description: "items to refresh median/volume this run (empty=default 12; set high e.g. 912 for a one-shot full backfill)"
         required: false
         default: ""
       delay:
-        description: "per-item pacing seconds (empty=default 2.5; raise if you see 429s)"
+        description: "per-item pacing seconds (empty=default 5.0; raise if you see 429s)"
         required: false
         default: ""
       budget_sec:

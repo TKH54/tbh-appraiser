@@ -296,9 +296,10 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     SHARD via per-item priceoverview, then advance the persisted offset (`_eoff`).
 
     The catalog is ~915 items; a full per-item pass is far too slow for a ~10-min
-    job, so each run only touches PRICES_SHARD items (default 25) starting at the
+    job, so each run only touches PRICES_SHARD items (default 12) starting at the
     saved offset. The whole catalog therefore cycles every ceil(N/shard) runs
-    (~1h) while the cheap sweep keeps EVERY item's lowest ask/listing fresh each
+    (~13h — see the rate note below; a faster lap just gets the IP 429'd and ends
+    up refreshing LESS per day) while the cheap sweep keeps EVERY item's lowest ask/listing fresh each
     run. Carried-but-not-refreshed items keep their previous m/v (set by
     carry_mv_baseline). A budget caps the wall clock so Steam throttling can't run
     the job long; the offset only advances by what we actually processed, so a
@@ -311,8 +312,20 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
         return 0
     # env vars may arrive as "" from workflow_dispatch inputs on non-dispatch
     # events, so coalesce empties to the defaults before parsing.
-    shard = int(os.environ.get("PRICES_SHARD") or 25)
-    delay = float(os.environ.get("PRICES_DELAY") or 2.5)    # per-item pacing (s)
+    #
+    # RATE, measured 2026-08-19 from the _eoff deltas in git history: at 25 items
+    # every 10 min (=150 req/h) priceoverview served a clean 25/cycle for FOUR
+    # hours (a full 912-item lap), then hit the wall and returned 429 to every
+    # request — including from a different device on the same home IP — for the
+    # next 7.5+ hours. The probe-once guard kept that cheap, but the net result
+    # was ~600 items refreshed per 12h with an 8h blind window. 150 req/h is
+    # simply above what this endpoint sustains, so the burst is a bad trade:
+    # halving the rate to ~72 req/h should refresh MORE per day and never go
+    # blind. Sweep (search/render) is throttled separately and stays untouched.
+    # These are the numbers to retune if the lockout returns — both are env
+    # overridable, so `-f shard=` / `-f delay=` can test a value before editing.
+    shard = int(os.environ.get("PRICES_SHARD") or 12)
+    delay = float(os.environ.get("PRICES_DELAY") or 5.0)    # per-item pacing (s)
     deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC") or 600)
     off = int(prev_doc.get("_eoff", 0) or 0) % n
     done = refreshed = 0
