@@ -318,6 +318,12 @@ setInterval(async () => {
 
 // item display name (JA names only when UI is Japanese; others use EN market name)
 const dispName = h => (LANG === "ja" && DATA.items[h]?.name_ja) ? DATA.items[h].name_ja : h;
+// Items folded in by autocatalog.py carry "nj" until localize.py has read the
+// updated client's string tables, so their name here is the English market one.
+// Only worth flagging in Japanese: the other locales show English names anyway.
+const njMark = h => (LANG === "ja" && DATA.items[h]?.nj)
+  ? ` <span class="foot" style="opacity:.65;" title="${esc(t("nj_tip"))}">${esc(t("nj_mark"))}</span>`
+  : "";
 const dispBase = bse => {
   if (LANG !== "ja") return bse;
   return (DATA.ja?.bases || {})[bse] || bse;
@@ -1125,7 +1131,7 @@ function renderGacha() {
       ? `<div class="foot" title="${esc(t("gacha_typ_tip"))}">${esc(t("gacha_typ"))} ${yen(r.spinTyp)}</div>` : "";
     return `<tr data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.coin)}" loading="lazy" alt="">
-        <a class="name" href="${marketUrl(r.coin)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.coin))}</a></td>
+        <a class="name" href="${marketUrl(r.coin)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.coin))}${njMark(r.coin)}</a></td>
       <td>${yen(r.spin)}<span class="foot">${esc(t("gacha_per"))}</span>${typ}</td>
       <td>${sellCell}</td>
       <td class="l">${verdict}</td>
@@ -1890,7 +1896,7 @@ function renderPlan() {
     const cls = take > 0 && startUnit < 4 ? "slotnow" : take === 0 ? "slotlater" : "";
     return `<tr class="${cls}" data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.hash)}" loading="lazy" alt="">
-        <a class="name" href="${marketUrl(r.hash)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.hash))}</a></td>
+        <a class="name" href="${marketUrl(r.hash)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.hash))}${njMark(r.hash)}</a></td>
       <td>×${r.qty}</td>
       <td>${take > 0 ? "×" + take : '<span class="muted">—</span>'}</td>
       <td>${money(r.unit)} <span class="foot">→ ${money(r.net)}</span></td>

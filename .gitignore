@@ -13,3 +13,4 @@ pr_body_review.md
 
 # Supabase labels snapshot (CI cache for delta fetch; egress saver)
 .labels_snapshot/
+_autocatalog_report.json

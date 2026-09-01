@@ -1,0 +1,246 @@
+# Fold newly-listed Steam Market items into the catalog on a schedule, so an
+# in-game update reaches the tool without waiting for the author to be at a PC
+# with the game installed. Built for 2026-09-08 (Plaguelands: Lv90 gear, new
+# runes, Corrupted Soulstones, Corrosion materials all landing at once).
+#
+# The price bot already keeps data/prices.json in step with the market, so
+# "listed but missing from items.json" IS the new-item signal; scripts/
+# autocatalog.py resolves each one's Steam icon and folds it in.
+#
+# Split by risk (see the script's docstring):
+#   tier 1  a new GRADE of a known base -> items.json only, refs.bin untouched.
+#           Recognition cannot change, so it goes straight to main.
+#   tier 2  a new BASE -> a ref is APPENDED to refs.bin. Appending never moves
+#           an existing ref, but it does add a nearest-neighbour competitor, so
+#           it reaches main only when seed_regression shows the confident
+#           mis-ID count did NOT rise. That is the no-false-positive rule:
+#           judged on mis-delta, never on the money-weighted verdict.
+#           A regression opens a PR and pings Discord instead of shipping.
+#
+# Japanese names for brand-new BASES still need localize.py on the PC with the
+# updated client; until then those items carry "nj" and the UI marks them.
+name: autocatalog
+on:
+  schedule:
+    # Every 6h, off the hour so it never lines up with the price chain.
+    - cron: "23 3,9,15,21 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "scan and report only, write nothing"
+        type: boolean
+        default: false
+      max:
+        description: "max new items to fold in one run"
+        default: "60"
+permissions:
+  contents: write
+  pull-requests: write
+# Never let two folds race each other onto main. Separate group from `pages`
+# and the price chain so none of them block the others.
+concurrency:
+  group: autocatalog
+  cancel-in-progress: false
+
+jobs:
+  fold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # rebasing onto the price bot's pushes needs history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # opencv is only needed to rebuild a sprite ref byte-for-byte the way
+      # catalog.py + matcher.py did; headless keeps the install small.
+      - run: pip install --quiet requests pillow numpy opencv-python-headless
+
+      # ------------------------------------------------------------ tier 1
+      - name: Fold in new grades of known bases (recognition untouched)
+        id: t1
+        env:
+          AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
+        run: |
+          # `cmd && other` as a whole line would abort the step under bash -e
+          # whenever the test is false, which is the normal case here.
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            FLAG=""
+          else
+            FLAG="--apply"
+          fi
+          python scripts/autocatalog.py --tier 1 $FLAG | tee t1.log
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib
+          r = json.loads(pathlib.Path("_autocatalog_report.json").read_text(encoding="utf-8"))
+          print(f"new={r['new']}")
+          print(f"n1={len(r['tier1'])}")
+          print(f"n2={len(r['tier2'])}")
+          print(f"deferred={len(r['deferred'])}")
+          print(f"throttled={str(r['throttled']).lower()}")
+          PY
+
+      - name: Push the tier-1 additions
+        if: steps.t1.outputs.n1 != '0' && github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/bump_release.py     # returning visitors cache items.json by APP_VERSION
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add data js index.html
+          git commit -qm "autocatalog: +${{ steps.t1.outputs.n1 }} listed item(s), known artwork"
+          # The price bot pushes every ~10 min, so a plain push loses the race
+          # often enough to matter. Rebase and retry rather than forcing.
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q origin main && \
+              git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main && exit 0
+            sleep $((i * 10))
+          done
+          exit 1
+
+      # ------------------------------------------------- tier 2 + the gate
+      # Measured BEFORE the refs change, on the same learned_seed, so the only
+      # thing that differs between the two numbers is the appended refs.
+      - name: Restore labels snapshot (Supabase delta fetch)
+        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true'
+        id: snaprestore
+        uses: actions/cache/restore@v4
+        with:
+          path: .labels_snapshot/labels.jsonl.gz
+          key: labels-snapshot-${{ github.run_id }}
+          restore-keys: labels-snapshot-
+
+      - name: Seed snapshot from the release archive when cache missed
+        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true' && steps.snaprestore.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .labels_snapshot
+          gh release download labels-archive -p labels.jsonl.gz -D .labels_snapshot -R "$GITHUB_REPOSITORY" || true
+
+      - name: Confident mis-IDs BEFORE appending refs
+        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true'
+        id: before
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
+        run: |
+          mkdir -p .labels_snapshot
+          python scripts/seed_regression.py --bar 0.075 | tee before.log
+          echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Append refs for brand-new artwork
+        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true'
+        id: t2
+        env:
+          AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
+        run: |
+          python scripts/autocatalog.py --tier 2 --apply | tee t2.log
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib
+          r = json.loads(pathlib.Path("_autocatalog_report.json").read_text(encoding="utf-8"))
+          print(f"added={r['refs_added']}")
+          PY
+
+      - name: Confident mis-IDs AFTER appending refs
+        if: steps.t2.outputs.added != '0' && steps.t2.outputs.added != ''
+        id: after
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
+        run: |
+          python scripts/seed_regression.py --bar 0.075 | tee after.log
+          echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' after.log | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether the new refs may ship
+        if: steps.t2.outputs.added != '0' && steps.t2.outputs.added != ''
+        id: gate
+        run: |
+          B="${{ steps.before.outputs.mis }}"; A="${{ steps.after.outputs.mis }}"
+          echo "confident mis-IDs: ${B:-?} -> ${A:-?}"
+          # A missing number means the check did not really run. Refuse to ship
+          # on an unmeasured change rather than assuming it was fine.
+          if [ -z "$B" ] || [ -z "$A" ]; then
+            echo "verdict=unmeasured" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$A" -le "$B" ]; then
+            echo "verdict=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push the new refs (gate passed)
+        if: steps.gate.outputs.verdict == 'pass'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/bump_release.py
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add data js index.html
+          git commit -qm "autocatalog: +${{ steps.t2.outputs.added }} ref(s) for new artwork (no new mis-IDs)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q origin main && \
+              git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main && exit 0
+            sleep $((i * 10))
+          done
+          exit 1
+
+      - name: Open a PR instead (gate failed or unmeasured)
+        if: steps.gate.outputs.verdict == 'fail' || steps.gate.outputs.verdict == 'unmeasured'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BR="autocatalog/refs-$(date -u +%Y%m%d-%H%M)"
+          python scripts/bump_release.py
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git checkout -qb "$BR"
+          git add data js index.html
+          git commit -qm "autocatalog: +${{ steps.t2.outputs.added }} ref(s) for new artwork (NEEDS REVIEW)"
+          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BR"
+          URL=$(gh pr create --title "autocatalog: new artwork refs need review" \
+            --body "$(printf '%s\n' \
+              "自動カタログ追加で **新規アイコン ${{ steps.t2.outputs.added }} 件** の認識データ(refs.bin)を追記しました。" \
+              "" \
+              "回帰チェック結果: 確信誤認識 **${{ steps.before.outputs.mis }} → ${{ steps.after.outputs.mis }}**" \
+              "" \
+              "誤認識が増えた(または測定できなかった)ため、自動反映は止めています。" \
+              "取り込むと既存アイテムの誤認識が増える可能性があります。" \
+              "" \
+              "判断材料: どの既存アイテムが新アイコンに負けたかを before.log / after.log の差分で確認してください。")" \
+            --base main --head "$BR") || URL=""
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------- notify
+      - name: Tell Discord what happened
+        if: always() && github.event.inputs.dry_run != 'true'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then exit 0; fi
+          N1="${{ steps.t1.outputs.n1 }}"; N2="${{ steps.t2.outputs.added }}"
+          V="${{ steps.gate.outputs.verdict }}"; DEF="${{ steps.t1.outputs.deferred }}"
+          # Silence is the point on a normal day: only speak when something
+          # actually changed or needs a human. Every test below is a full
+          # if-block on purpose: a bare `test && cmd` line aborts the step under
+          # bash -e whenever the test is false, which is the common case here.
+          if [ "${N1:-0}" = "0" ] && [ "${N2:-0}" = "0" ] && [ -z "$V" ]; then exit 0; fi
+          MSG="🆕 **新アイテムをカタログに自動追加**"
+          if [ "${N1:-0}" != "0" ]; then
+            MSG="$MSG"$'\n'"・既存アイコン: ${N1}件 → 反映済み"
+          fi
+          if [ "$V" = "pass" ]; then
+            MSG="$MSG"$'\n'"・新アイコン: ${N2}件 → 回帰PASS(誤認識 ${{ steps.before.outputs.mis }}→${{ steps.after.outputs.mis }})、反映済み"
+          elif [ -n "$V" ]; then
+            MSG="$MSG"$'\n'"⚠ 新アイコン ${N2}件は回帰${V}(誤認識 ${{ steps.before.outputs.mis }}→${{ steps.after.outputs.mis }}) → PR待ち ${{ steps.pr.outputs.url }}"
+          fi
+          if [ "${DEF:-0}" != "0" ]; then
+            MSG="$MSG"$'\n'"・Steam検索に未反映で次回持ち越し: ${DEF}件"
+          fi
+          MSG="$MSG"$'\n'"→ $RUN_URL"
+          jq -n --arg c "$MSG" '{content:$c}' | \
+            curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
