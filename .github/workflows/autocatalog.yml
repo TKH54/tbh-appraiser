@@ -62,6 +62,7 @@ jobs:
         env:
           AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
         run: |
+          set -o pipefail   # `| tee` must not hide the script's exit code
           # `cmd && other` as a whole line would abort the step under bash -e
           # whenever the test is false, which is the normal case here.
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
@@ -77,11 +78,12 @@ jobs:
           print(f"n1={len(r['tier1'])}")
           print(f"n2={len(r['tier2'])}")
           print(f"deferred={len(r['deferred'])}")
+          print(f"blocked={len(r['blocked'])}")
           print(f"throttled={str(r['throttled']).lower()}")
           PY
 
       - name: Push the tier-1 additions
-        if: steps.t1.outputs.n1 != '0' && github.event.inputs.dry_run != 'true'
+        if: steps.t1.outputs.n1 != '0' && steps.t1.outputs.n1 != '' && github.event.inputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -103,7 +105,7 @@ jobs:
       # Measured BEFORE the refs change, on the same learned_seed, so the only
       # thing that differs between the two numbers is the appended refs.
       - name: Restore labels snapshot (Supabase delta fetch)
-        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true'
+        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
         id: snaprestore
         uses: actions/cache/restore@v4
         with:
@@ -112,7 +114,7 @@ jobs:
           restore-keys: labels-snapshot-
 
       - name: Seed snapshot from the release archive when cache missed
-        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true' && steps.snaprestore.outputs.cache-matched-key == ''
+        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true' && steps.snaprestore.outputs.cache-matched-key == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -120,22 +122,24 @@ jobs:
           gh release download labels-archive -p labels.jsonl.gz -D .labels_snapshot -R "$GITHUB_REPOSITORY" || true
 
       - name: Confident mis-IDs BEFORE appending refs
-        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true'
+        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
         id: before
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
+          set -o pipefail
           mkdir -p .labels_snapshot
           python scripts/seed_regression.py --bar 0.075 | tee before.log
           echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
 
       - name: Append refs for brand-new artwork
-        if: steps.t1.outputs.n2 != '0' && github.event.inputs.dry_run != 'true'
+        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
         id: t2
         env:
           AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
         run: |
+          set -o pipefail
           python scripts/autocatalog.py --tier 2 --apply | tee t2.log
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib
@@ -150,6 +154,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
+          set -o pipefail
           python scripts/seed_regression.py --bar 0.075 | tee after.log
           echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' after.log | tail -1)" >> "$GITHUB_OUTPUT"
 
@@ -224,11 +229,12 @@ jobs:
           if [ -z "$DISCORD_WEBHOOK" ]; then exit 0; fi
           N1="${{ steps.t1.outputs.n1 }}"; N2="${{ steps.t2.outputs.added }}"
           V="${{ steps.gate.outputs.verdict }}"; DEF="${{ steps.t1.outputs.deferred }}"
+          BLK="${{ steps.t1.outputs.blocked }}"
           # Silence is the point on a normal day: only speak when something
           # actually changed or needs a human. Every test below is a full
           # if-block on purpose: a bare `test && cmd` line aborts the step under
           # bash -e whenever the test is false, which is the common case here.
-          if [ "${N1:-0}" = "0" ] && [ "${N2:-0}" = "0" ] && [ -z "$V" ]; then exit 0; fi
+          if [ "${N1:-0}" = "0" ] && [ "${N2:-0}" = "0" ] && [ "${BLK:-0}" = "0" ] && [ -z "$V" ]; then exit 0; fi
           MSG="🆕 **新アイテムをカタログに自動追加**"
           if [ "${N1:-0}" != "0" ]; then
             MSG="$MSG"$'\n'"・既存アイコン: ${N1}件 → 反映済み"

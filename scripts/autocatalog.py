@@ -17,8 +17,22 @@ TIERS -- the split exists to honour the no-false-positive policy:
 
   tier 1  the item's Steam icon is one the catalog ALREADY has a ref for
           (a new grade of a known base: same artwork, different border).
-          items.json only; refs.bin is not touched, so recognition cannot
-          change and there is no way to create a new mis-ID. Safe unattended.
+          items.json only; refs.bin is untouched, so which BASE a capture
+          matches cannot change. What does change is which grade of that base
+          the cell resolves to, and that only moves the right way: pipeline.js
+          picks by exact border rarity and previously had to fall back (or
+          return "ambiguous") for a grade the catalog was missing.
+          The one exception is carved out below as `blocked`.
+
+  blocked a GRADED item whose base the catalog currently holds as a LONE
+          material. pipeline.js calls a base a material only while it has a
+          single ""-rarity variant, and that flag is what applies the strict
+          0.05 auto-confirm bar -- which exists because round material icons
+          are attractors that mis-extracted gear collapses into at ~0.02-0.05.
+          Adding a graded sibling switches that bar off for the base. It
+          touches no ref, so the tier-2 gate would never catch it: never
+          applied, only reported. (302 bases today, 102 of them lone
+          materials, 0 single-variant equipment.)
 
   tier 2  brand-new artwork -> a new ref is APPENDED to refs.bin/refs.json.
           Appending never moves an existing ref (fixed 4096-byte stride, so
@@ -242,6 +256,9 @@ def entry_for(h: str, icon: str, ja_bases: dict, ja_rarities: dict) -> dict:
     base = m.group(1).strip() if m else h
     rarity = m.group(2).strip() if m else ""
     variant = (m.group(3) or "").strip() if m else ""
+    ja = ja_bases.get(base)
+    # Key order mirrors build_web_data.build_items() so an auto-added entry is
+    # indistinguishable from the 1082 hand-built ones in a diff.
     e = {
         "base": base,
         "rarity": rarity,
@@ -249,14 +266,13 @@ def entry_for(h: str, icon: str, ja_bases: dict, ja_rarities: dict) -> dict:
         "tradeable": (not rarity) or rarity in TRADEABLE,
         # discovered BECAUSE it is listed, so never a synth-only grade
         "synth": False,
-        "name_en": h,
     }
-    ja = ja_bases.get(base)
     if ja:
         # A new GRADE of a base the game already localised: the Japanese name is
         # fully derivable, so it needs no flag and no trip to the PC.
         e["name_ja"] = compose_ja(ja, rarity, ja_rarities, variant)
-    else:
+    e["name_en"] = h
+    if not ja:
         # A new BASE. matcher._compose_ja would splice the English base into a
         # Japanese frame ("Empire Gloves（イミュータル）A"); showing the clean
         # English market name and flagging it is honest instead of half-done.
@@ -285,8 +301,8 @@ def main() -> int:
     cache = {k: v for k, v in (prev.get("icons") or {}).items() if k in new_names}
 
     report = {"checked": len(prices), "new": len(new_names), "tier1": [],
-              "tier2": [], "deferred": [], "throttled": False, "refs_added": 0,
-              "icons": dict(cache)}
+              "tier2": [], "deferred": [], "blocked": [], "throttled": False,
+              "refs_added": 0, "icons": dict(cache)}
 
     def save_report():
         REPORT.write_text(json.dumps(report, ensure_ascii=False, indent=1),
@@ -310,13 +326,33 @@ def main() -> int:
         save_report()
         return 0                      # not a failure: just try again next run
 
-    t1 = [(h, icons[h]) for h in new_names
-          if h in icons and icons[h] in known_icons]
-    t2 = [(h, icons[h]) for h in new_names
-          if h in icons and icons[h] not in known_icons]
+    # A GRADED sibling of a base the catalog currently holds as a lone material
+    # must never be folded in unattended. pipeline.js treats a base as a
+    # material only while it has exactly one ""-rarity variant, and that flag is
+    # what applies the STRICT 0.05 auto-confirm bar -- which exists because a
+    # round material icon is an attractor that mis-extracted gear collapses into
+    # at ~0.02-0.05. Adding a graded sibling silently turns that bar off for the
+    # base. It changes no ref, so the tier-2 regression gate would never see it;
+    # the only safe answer is to leave it for a human.
+    variants = {}
+    for v in items.values():
+        variants.setdefault(v["base"], []).append(v["rarity"])
+    lone_materials = {b for b, rs in variants.items() if len(rs) == 1 and rs[0] == ""}
+
+    def blocked(h: str) -> bool:
+        m = NAME_RE.match(h)
+        return bool(m) and m.group(1).strip() in lone_materials
+
+    usable = [h for h in new_names if h in icons and not blocked(h)]
+    t1 = [(h, icons[h]) for h in usable if icons[h] in known_icons]
+    t2 = [(h, icons[h]) for h in usable if icons[h] not in known_icons]
     report["tier1"] = [h for h, _ in t1]
     report["tier2"] = [h for h, _ in t2]
     report["deferred"] = [h for h in new_names if h not in icons]
+    report["blocked"] = [h for h in new_names if h in icons and blocked(h)]
+    if report["blocked"]:
+        print(f"BLOCKED (would un-material an existing base, needs a human): "
+              f"{', '.join(report['blocked'])}", file=sys.stderr)
     report["icons"] = dict(icons)
 
     _ja = _read("ja_names.json")
@@ -330,7 +366,7 @@ def main() -> int:
         for h, icon in t1:
             items[h] = entry_for(h, icon, ja_bases, ja_rarities)
         changed = True
-        print(f"tier 1: +{len(t1)} item(s), recognition untouched")
+        print(f"tier 1: +{len(t1)} item(s), refs untouched")
 
     if want2 and t2:
         refs_meta = _read("refs.json")
@@ -358,6 +394,10 @@ def main() -> int:
                 time.sleep(REQ_SLEEP)
                 v, mask = sprite_ref(sess, icon)
                 blob += v + mask
+                # The 291 existing entries carry a sprite FILENAME here
+                # (sprite_000.png), but no sprite file is shipped with the site
+                # and nothing reads this field -- it is vestigial. The CDN hash
+                # is at least the sprite's real identity, so store that.
                 refs_meta.append({"base": base, "icon": icon})
                 items[h] = entry_for(h, icon, ja_bases, ja_rarities)
                 added += 1
