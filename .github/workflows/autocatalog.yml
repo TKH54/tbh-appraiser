@@ -132,6 +132,7 @@ jobs:
           mkdir -p .labels_snapshot
           python scripts/seed_regression.py --bar 0.075 | tee before.log
           echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
+          echo "rows=$(sed -n 's/.*(of \([0-9]\+\)).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
 
       - name: Append refs for brand-new artwork
         if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
@@ -157,16 +158,28 @@ jobs:
           set -o pipefail
           python scripts/seed_regression.py --bar 0.075 | tee after.log
           echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' after.log | tail -1)" >> "$GITHUB_OUTPUT"
+          echo "rows=$(sed -n 's/.*(of \([0-9]\+\)).*/\1/p' after.log | tail -1)" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether the new refs may ship
         if: steps.t2.outputs.added != '0' && steps.t2.outputs.added != ''
         id: gate
         run: |
           B="${{ steps.before.outputs.mis }}"; A="${{ steps.after.outputs.mis }}"
-          echo "confident mis-IDs: ${B:-?} -> ${A:-?}"
+          RB="${{ steps.before.outputs.rows }}"; RA="${{ steps.after.outputs.rows }}"
+          echo "confident mis-IDs: ${B:-?} -> ${A:-?}   (labels ${RB:-?} -> ${RA:-?})"
           # A missing number means the check did not really run. Refuse to ship
           # on an unmeasured change rather than assuming it was fine.
           if [ -z "$B" ] || [ -z "$A" ]; then
+            echo "verdict=unmeasured" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # The two measurements sit ~11 min apart (one seed_regression pass over
+          # ~54k labels each) and the second one pulls whatever crowd labels
+          # arrived in between, because LABELS_SNAPSHOT delta mode fetches
+          # id > max(snapshot). Drift that REMOVES a mis would hide a regression
+          # the new refs actually caused, so an unequal label count makes the
+          # before/after comparison meaningless: call it unmeasured, not a pass.
+          if [ -z "$RB" ] || [ -z "$RA" ] || [ "$RB" != "$RA" ]; then
+            echo "label set moved ($RB -> $RA); not an apples-to-apples comparison"
             echo "verdict=unmeasured" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if [ "$A" -le "$B" ]; then
