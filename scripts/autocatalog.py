@@ -453,13 +453,21 @@ def main() -> int:
             save_report()
             return 1
         added = 0
+        t2_written = 0          # items written by this loop, ref or not
+        packed = set()          # icons this loop already turned into a ref
         try:
             for h, icon in t2:
-                m = NAME_RE.match(h)
-                base = m.group(1).strip() if m else h
-                if any(r["base"] == base for r in refs_meta):
-                    # another grade of a base a previous loop already packed
+                base = base_of(h)
+                if icon in packed:
+                    # another GRADE of the same new base: same artwork, so it
+                    # rides the ref just packed. Dedupe on the ICON, not the
+                    # base -- keying on the base would also swallow the case
+                    # where an existing base gains NEW artwork, leaving that
+                    # sprite permanently unrecognisable. Several refs pointing
+                    # at one base are harmless: every one of them resolves to
+                    # the same answer.
                     items[h] = entry_for(h, icon, ja_bases, ja_rarities)
+                    t2_written += 1
                     continue
                 time.sleep(REQ_SLEEP)
                 v, mask = sprite_ref(sess, icon)
@@ -470,7 +478,9 @@ def main() -> int:
                 # is at least the sprite's real identity, so store that.
                 refs_meta.append({"base": base, "icon": icon})
                 items[h] = entry_for(h, icon, ja_bases, ja_rarities)
+                packed.add(icon)
                 added += 1
+                t2_written += 1
         except Throttled as e:
             print(f"steam throttled us mid-sprite ({e}); keeping what we packed",
                   file=sys.stderr)
@@ -479,6 +489,12 @@ def main() -> int:
             print(f"sprite fetch failed ({e}); keeping what we packed",
                   file=sys.stderr)
         report["refs_added"] = added
+        if t2_written:
+            # Items can be written without a single ref being appended (every
+            # one rode an icon packed earlier in the loop). Persisting is keyed
+            # on having written ITEMS, not on `added` -- otherwise those items
+            # were dropped on the floor and re-attempted, identically, forever.
+            changed = True
         if added:
             if args.apply:
                 (DATA / "refs.bin").write_bytes(bytes(blob))
@@ -486,9 +502,10 @@ def main() -> int:
                 meta = _read("meta.json")
                 meta["n_refs"] = len(refs_meta)
                 _write_indent1("meta.json", meta)
-            changed = True
             print(f"tier 2: +{added} ref(s) appended "
                   f"({n_before} -> {n_before + added}); needs the regression gate")
+        elif t2_written:
+            print(f"tier 2: +{t2_written} item(s) on artwork packed earlier, no new ref")
 
     if changed and args.apply:
         _write_compact("items.json", items)
