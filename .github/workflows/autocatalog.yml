@@ -10,10 +10,12 @@
 # Split by risk (see the script's docstring):
 #   tier 1  a new GRADE of a known base -> items.json only, refs.bin untouched,
 #           so which base a capture matches cannot move. Straight to main.
-#   blocked the two tier-1-shaped cases that CAN still cause a mis-ID (graded
-#           sibling of a lone material; known artwork under a new base). Never
-#           applied automatically -- reported once a day until a human acts.
-#   tier 2  a new BASE -> a ref is APPENDED to refs.bin. Appending never moves
+#   blocked the three shapes that CAN still cause a mis-ID (graded sibling of a
+#           lone material; known artwork under a new base; two new bases
+#           sharing one new icon). Never applied automatically -- reported once
+#           a day until a human acts.
+#   tier 2  brand-new ARTWORK (a new base, or a known base whose sprite
+#           changed) -> a ref is APPENDED to refs.bin. Appending never moves
 #           an existing ref, but it does add a nearest-neighbour competitor, so
 #           it reaches main only when seed_regression shows the confident
 #           mis-ID count did NOT rise. That is the no-false-positive rule:
@@ -68,7 +70,7 @@ jobs:
         run: python scripts/autocatalog_selftest.py
 
       # ------------------------------------------------------------ tier 1
-      - name: Fold in new grades of known bases (recognition untouched)
+      - name: Fold in new grades of known bases (refs.bin untouched)
         id: t1
         env:
           AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
