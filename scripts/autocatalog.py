@@ -24,9 +24,8 @@ TIERS -- the split exists to honour the no-false-positive policy:
           return "ambiguous") for a grade the catalog was missing.
           The one exception is carved out below as `blocked`.
 
-  blocked two shapes that LOOK like tier 1 -- the icon already has a ref, so
-          no ref moves and the tier-2 gate can never see them -- while actually
-          being able to create a confident mis-ID. Never applied, only reported.
+  blocked three shapes that would create a confident mis-ID this script cannot
+          gate away. Never applied, only reported.
 
           (a) a GRADED item whose base the catalog holds as a LONE material.
               pipeline.js calls a base a material only while it has a single
@@ -41,6 +40,14 @@ TIERS -- the split exists to honour the no-false-positive policy:
               and the matcher relies on it: a ref resolves a sprite to exactly
               one base, so the newcomer's cells would come back as whichever
               base already owns that artwork.
+
+          (c) two NEW bases sharing one NEW icon. Left alone this script would
+              append two refs holding the identical vector under different
+              bases, making the matcher's top-1 between them a coin flip -- a
+              mis-ID of its own making. Both sides are held back.
+
+          (a) and (b) move no ref at all, so the tier-2 regression gate could
+          never have caught them.
 
   tier 2  brand-new artwork -> a new ref is APPENDED to refs.bin/refs.json.
           Appending never moves an existing ref (fixed 4096-byte stride, so
@@ -316,7 +323,8 @@ def main() -> int:
         # phase 2 of the same run: keep phase 1's window so both phases agree
         # even if the 6h slot ticked over between them, minus whatever phase 1
         # already folded into items.json.
-        new_names = [h for h in prev["window"] if h in set(pending)]
+        still = set(pending)
+        new_names = [h for h in prev["window"] if h in still]
     elif len(pending) > MAX_NEW_PER_RUN:
         slot = int(time.time()) // 21600
         off = (slot * MAX_NEW_PER_RUN) % len(pending)
@@ -381,6 +389,17 @@ def main() -> int:
         m = NAME_RE.match(h)
         return m.group(1).strip() if m else h
 
+    # Same 1:1 rule, but for collisions BETWEEN the newcomers: two new bases
+    # sharing one new icon would have this script append two refs holding the
+    # identical vector under different bases, so the matcher's top-1 between
+    # them is a coin flip. That is a mis-ID this script would have created
+    # itself, so neither side may go in unattended.
+    new_icon_bases: dict[str, set] = {}
+    for h in new_names:
+        if h in icons and icons[h] not in icon_owner:
+            new_icon_bases.setdefault(icons[h], set()).add(base_of(h))
+    contested = {i for i, bs in new_icon_bases.items() if len(bs) > 1}
+
     def blocked(h: str) -> str | None:
         """Reason this item must not be folded in unattended, or None."""
         b = base_of(h)
@@ -389,6 +408,9 @@ def main() -> int:
         owner = icon_owner.get(icons[h])
         if owner is not None and owner != b:
             return f"reuses {owner!r}'s artwork under a new base"
+        if icons[h] in contested:
+            others = sorted(new_icon_bases[icons[h]] - {b})
+            return f"shares brand-new artwork with {', '.join(map(repr, others))}"
         return None
 
     usable = [h for h in new_names if h in icons and not blocked(h)]

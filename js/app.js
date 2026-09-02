@@ -319,10 +319,13 @@ setInterval(async () => {
 // item display name (JA names only when UI is Japanese; others use EN market name)
 const dispName = h => (LANG === "ja" && DATA.items[h]?.name_ja) ? DATA.items[h].name_ja : h;
 // Items folded in by autocatalog.py carry "nj" until localize.py has read the
-// updated client's string tables, so their name here is the English market one.
+// updated client's string tables, so the name shown is the English market one.
 // Only worth flagging in Japanese: the other locales show English names anyway.
-const njMark = h => (LANG === "ja" && DATA.items[h]?.nj)
-  ? ` <span class="foot" style="opacity:.65;" title="${esc(t("nj_tip"))}">${esc(t("nj_mark"))}</span>`
+// Same pill markup as the never/noprice/thin badges, but ADDITIVE rather than
+// part of their if/else chain — it describes the NAME, not the price, so it can
+// legitimately sit next to any of them.
+const njBadge = h => (LANG === "ja" && DATA.items[h]?.nj)
+  ? `<span class="pill info" title="${esc(t("badge_nj_tip"))}">${esc(t("badge_nj"))}</span>`
   : "";
 const dispBase = bse => {
   if (LANG !== "ja") return bse;
@@ -1000,7 +1003,7 @@ function renderTable() {
     }
     return `<tr data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="border:2px solid ${bc}" src="${iconUrl(r.hash)}" loading="lazy" alt=""></td>
-      <td${nameAttr}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}
+      <td${nameAttr}><a class="name" href="${href}" target="_blank" rel="noopener">${esc(r.name)}</a>${badge}${njBadge(r.hash)}
         <br><span class="rar" style="color:${bc}">${esc(r.rarity || "")}</span></td>
       <td>${r.qty}</td>
       <td class="num1">${yen(r.unit, thin ? "muted" : undefined)}${(() => { const tr = trendChip(r.hash), ak = lowestAskNote(r.hash); return (tr || ak) ? `<br><span class="sub">${tr}${ak}</span>` : ""; })()}</td>
@@ -1131,7 +1134,7 @@ function renderGacha() {
       ? `<div class="foot" title="${esc(t("gacha_typ_tip"))}">${esc(t("gacha_typ"))} ${yen(r.spinTyp)}</div>` : "";
     return `<tr data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.coin)}" loading="lazy" alt="">
-        <a class="name" href="${marketUrl(r.coin)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.coin))}${njMark(r.coin)}</a></td>
+        <a class="name" href="${marketUrl(r.coin)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.coin))}</a>${njBadge(r.coin)}</td>
       <td>${yen(r.spin)}<span class="foot">${esc(t("gacha_per"))}</span>${typ}</td>
       <td>${sellCell}</td>
       <td class="l">${verdict}</td>
@@ -1896,7 +1899,7 @@ function renderPlan() {
     const cls = take > 0 && startUnit < 4 ? "slotnow" : take === 0 ? "slotlater" : "";
     return `<tr class="${cls}" data-hash="${esc(r.hash)}">
       <td class="l"><img class="icon" style="width:1.6rem;height:1.6rem;" src="${iconUrl(r.hash)}" loading="lazy" alt="">
-        <a class="name" href="${marketUrl(r.hash)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.hash))}${njMark(r.hash)}</a></td>
+        <a class="name" href="${marketUrl(r.hash)}" target="_blank" rel="noopener" style="font-size:.78rem;">${esc(dispName(r.hash))}</a>${njBadge(r.hash)}</td>
       <td>×${r.qty}</td>
       <td>${take > 0 ? "×" + take : '<span class="muted">—</span>'}</td>
       <td>${money(r.unit)} <span class="foot">→ ${money(r.net)}</span></td>
