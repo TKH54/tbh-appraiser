@@ -33,11 +33,13 @@ TIERS -- the split exists to honour the no-false-positive policy:
               auto-confirm bar, which exists because round material icons are
               attractors that mis-extracted gear collapses into at ~0.02-0.05.
               A graded sibling switches that bar off for the base.
-              (302 bases today, 102 lone materials, 0 single-variant equipment.)
+              (measured 2026-09-02: 302 bases, 102 lone materials, and 0
+              single-variant equipment, so nothing else takes this path.)
 
           (b) an item reusing a KNOWN icon under a NEW base. Steam icon <-> base
-              is strictly 1:1 across the catalog today (302/302, no collisions)
-              and the matcher relies on it: a ref resolves a sprite to exactly
+              is 1:1 across the catalog -- an invariant these guards exist to
+              KEEP (302/302 with no collisions, 2026-09-02) -- and the matcher
+              relies on it: a ref resolves a sprite to exactly
               one base, so the newcomer's cells would come back as whichever
               base already owns that artwork.
 
@@ -229,11 +231,12 @@ def resolve_icons(sess, names: list[str], cache: dict) -> dict[str, str]:
 def sprite_ref(sess, icon: str) -> tuple[bytes, bytes]:
     """Download one sprite and pack it exactly as build_web_data.py would.
 
-    The 291 refs already in refs.bin were built from sprites catalog.py had
-    flattened onto BLACK with alpha_composite before saving, then read back
-    through cv2 (BGR). Reproducing that byte-for-byte matters: a ref computed
-    over a different background sits at a different point in the same space as
-    the existing refs and would quietly mis-rank against them.
+    The refs this repo started with (291 of them, 2026-09-02) were built from
+    sprites catalog.py had flattened onto BLACK with alpha_composite before
+    saving, then read back through cv2 (BGR). Reproducing that byte-for-byte
+    matters: a ref computed over a different background sits at a different
+    point in the same space as the rest and would quietly mis-rank against
+    them. Verified identical to a removed-and-rebuilt ref.
     """
     r = _get(sess, CDN + icon)
     if r is None:
@@ -260,7 +263,7 @@ def compose_ja(base_ja: str, rarity: str, rarity_ja: dict, variant: str) -> str:
     """Reproduce matcher._compose_ja exactly: '<base>（<rarity>）<variant>' with
     FULL-WIDTH parentheses for equipment, bare '<base>' for materials. Getting
     the punctuation wrong would make every auto-added name look foreign next to
-    the 1082 that localize.py produced."""
+    the ones localize.py produced."""
     if not rarity:
         return base_ja
     return f"{base_ja}（{rarity_ja.get(rarity, rarity)}）{variant or ''}".rstrip()
@@ -273,7 +276,7 @@ def entry_for(h: str, icon: str, ja_bases: dict, ja_rarities: dict) -> dict:
     variant = (m.group(3) or "").strip() if m else ""
     ja = ja_bases.get(base)
     # Key order mirrors build_web_data.build_items() so an auto-added entry is
-    # indistinguishable from the 1082 hand-built ones in a diff.
+    # indistinguishable from the hand-built ones in a diff.
     e = {
         "base": base,
         "rarity": rarity,
@@ -378,8 +381,9 @@ def main() -> int:
         variants.setdefault(v["base"], []).append(v["rarity"])
     lone_materials = {b for b, rs in variants.items() if len(rs) == 1 and rs[0] == ""}
 
-    # Steam icon <-> base is strictly 1:1 across the whole catalog today (302
-    # icons, 302 bases, zero collisions), and the matcher depends on it: a ref
+    # Steam icon <-> base is 1:1 across the whole catalog -- an invariant this
+    # guard exists to keep (302 icons / 302 bases, no collisions, measured
+    # 2026-09-02) -- and the matcher depends on it: a ref
     # resolves a sprite to exactly ONE base. An item that reuses a known icon
     # under a NEW base would look like tier 1 (icon already has a ref, so no ref
     # change) while actually being unresolvable -- its cells would come back as
@@ -477,10 +481,11 @@ def main() -> int:
                 time.sleep(REQ_SLEEP)
                 v, mask = sprite_ref(sess, icon)
                 blob += v + mask
-                # The 291 existing entries carry a sprite FILENAME here
-                # (sprite_000.png), but no sprite file is shipped with the site
-                # and nothing reads this field -- it is vestigial. The CDN hash
-                # is at least the sprite's real identity, so store that.
+                # This field is vestigial: the entries build_web_data.py wrote
+                # hold a sprite FILENAME (sprite_000.png), no sprite file ships
+                # with the site, and nothing reads it. Rows added here hold the
+                # CDN hash instead -- the sprite's real identity -- so expect
+                # both forms to coexist.
                 refs_meta.append({"base": base, "icon": icon})
                 items[h] = entry_for(h, icon, ja_bases, ja_rarities)
                 packed.add(icon)
