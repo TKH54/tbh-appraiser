@@ -59,6 +59,14 @@ jobs:
       # catalog.py + matcher.py did; headless keeps the install small.
       - run: pip install --quiet requests pillow numpy opencv-python-headless
 
+      # Runs before anything touches Steam or the data files. The three blocked
+      # rules are the only thing standing between this job and a class of
+      # mis-ID the tier-2 gate structurally cannot catch, and they are easy to
+      # refactor away by accident -- nothing else in CI would notice. Offline,
+      # a few seconds.
+      - name: Self-test the folding rules
+        run: python scripts/autocatalog_selftest.py
+
       # ------------------------------------------------------------ tier 1
       - name: Fold in new grades of known bases (recognition untouched)
         id: t1
