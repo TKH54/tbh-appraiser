@@ -8,8 +8,11 @@
 # autocatalog.py resolves each one's Steam icon and folds it in.
 #
 # Split by risk (see the script's docstring):
-#   tier 1  a new GRADE of a known base -> items.json only, refs.bin untouched.
-#           Recognition cannot change, so it goes straight to main.
+#   tier 1  a new GRADE of a known base -> items.json only, refs.bin untouched,
+#           so which base a capture matches cannot move. Straight to main.
+#   blocked the two tier-1-shaped cases that CAN still cause a mis-ID (graded
+#           sibling of a lone material; known artwork under a new base). Never
+#           applied automatically -- reported once a day until a human acts.
 #   tier 2  a new BASE -> a ref is APPENDED to refs.bin. Appending never moves
 #           an existing ref, but it does add a nearest-neighbour competitor, so
 #           it reaches main only when seed_regression shows the confident
@@ -63,8 +66,6 @@ jobs:
           AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
         run: |
           set -o pipefail   # `| tee` must not hide the script's exit code
-          # `cmd && other` as a whole line would abort the step under bash -e
-          # whenever the test is false, which is the normal case here.
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             FLAG=""
           else
@@ -97,6 +98,10 @@ jobs:
           for i in 1 2 3 4 5; do
             git pull --rebase -q origin main && \
               git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main && exit 0
+            # A conflicted rebase leaves the tree mid-rebase and every later
+            # attempt would just fail with "rebase in progress", turning the
+            # retries into dead time. Clear it so a retry is really a retry.
+            git rebase --abort >/dev/null 2>&1 || true
             sleep $((i * 10))
           done
           exit 1
@@ -201,6 +206,10 @@ jobs:
           for i in 1 2 3 4 5; do
             git pull --rebase -q origin main && \
               git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main && exit 0
+            # A conflicted rebase leaves the tree mid-rebase and every later
+            # attempt would just fail with "rebase in progress", turning the
+            # retries into dead time. Clear it so a retry is really a retry.
+            git rebase --abort >/dev/null 2>&1 || true
             sleep $((i * 10))
           done
           exit 1
@@ -244,10 +253,20 @@ jobs:
           V="${{ steps.gate.outputs.verdict }}"; DEF="${{ steps.t1.outputs.deferred }}"
           BLK="${{ steps.t1.outputs.blocked }}"
           # Silence is the point on a normal day: only speak when something
-          # actually changed or needs a human. Every test below is a full
-          # if-block on purpose: a bare `test && cmd` line aborts the step under
-          # bash -e whenever the test is false, which is the common case here.
-          if [ "${N1:-0}" = "0" ] && [ "${N2:-0}" = "0" ] && [ "${BLK:-0}" = "0" ] && [ -z "$V" ]; then exit 0; fi
+          # actually changed or needs a human. (Full if-blocks rather than bare
+          # `test && cmd` lines: under bash -e that form is fine mid-script, but
+          # as the LAST line of a step its false status becomes the step's exit
+          # code and fails the job. Keeping one style avoids that edge.)
+          if [ "${N1:-0}" = "0" ] && [ "${N2:-0}" = "0" ] && [ -z "$V" ]; then
+            # Nothing shipped. A blocked item stays blocked until a human acts,
+            # so pinging every 6h would train us to ignore the channel -- the
+            # exact failure the old stale-price alert had. Once a day is enough.
+            if [ "${BLK:-0}" != "0" ] && [ "$(date -u +%H)" = "03" ]; then
+              jq -n --arg c "⚠ **自動追加を保留中のアイテムが ${BLK} 件あります**（既存の認識を壊す可能性があるため手動判断が必要）→ $RUN_URL" \
+                '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            fi
+            exit 0
+          fi
           MSG="🆕 **新アイテムをカタログに自動追加**"
           if [ "${N1:-0}" != "0" ]; then
             MSG="$MSG"$'\n'"・既存アイコン: ${N1}件 → 反映済み"

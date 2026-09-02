@@ -24,15 +24,23 @@ TIERS -- the split exists to honour the no-false-positive policy:
           return "ambiguous") for a grade the catalog was missing.
           The one exception is carved out below as `blocked`.
 
-  blocked a GRADED item whose base the catalog currently holds as a LONE
-          material. pipeline.js calls a base a material only while it has a
-          single ""-rarity variant, and that flag is what applies the strict
-          0.05 auto-confirm bar -- which exists because round material icons
-          are attractors that mis-extracted gear collapses into at ~0.02-0.05.
-          Adding a graded sibling switches that bar off for the base. It
-          touches no ref, so the tier-2 gate would never catch it: never
-          applied, only reported. (302 bases today, 102 of them lone
-          materials, 0 single-variant equipment.)
+  blocked two shapes that LOOK like tier 1 -- the icon already has a ref, so
+          no ref moves and the tier-2 gate can never see them -- while actually
+          being able to create a confident mis-ID. Never applied, only reported.
+
+          (a) a GRADED item whose base the catalog holds as a LONE material.
+              pipeline.js calls a base a material only while it has a single
+              ""-rarity variant, and that flag applies the strict 0.05
+              auto-confirm bar, which exists because round material icons are
+              attractors that mis-extracted gear collapses into at ~0.02-0.05.
+              A graded sibling switches that bar off for the base.
+              (302 bases today, 102 lone materials, 0 single-variant equipment.)
+
+          (b) an item reusing a KNOWN icon under a NEW base. Steam icon <-> base
+              is strictly 1:1 across the catalog today (302/302, no collisions)
+              and the matcher relies on it: a ref resolves a sprite to exactly
+              one base, so the newcomer's cells would come back as whichever
+              base already owns that artwork.
 
   tier 2  brand-new artwork -> a new ref is APPENDED to refs.bin/refs.json.
           Appending never moves an existing ref (fixed 4096-byte stride, so
@@ -289,7 +297,7 @@ def main() -> int:
 
     items = _read("items.json")
     prices = _read("prices.json")["items"]
-    new_names = sorted(set(prices) - set(items))[:MAX_NEW_PER_RUN]
+    pending = sorted(set(prices) - set(items))
 
     # A previous phase this run already paid for these lookups.
     prev = {}
@@ -298,9 +306,27 @@ def main() -> int:
             prev = json.loads(REPORT.read_text(encoding="utf-8"))
         except ValueError:
             prev = {}
+    # Which pending items this run works on. Rotating beats always taking the
+    # alphabetically-first N: an item Steam's search index cannot resolve stays
+    # pending forever, so a fixed head would let a few such names sit at the
+    # front and starve everything behind them. The offset steps by a WHOLE
+    # window per 6h slot (stepping by one would take ~10 days to cover 101
+    # pending items instead of two slots).
+    if prev.get("window"):
+        # phase 2 of the same run: keep phase 1's window so both phases agree
+        # even if the 6h slot ticked over between them, minus whatever phase 1
+        # already folded into items.json.
+        new_names = [h for h in prev["window"] if h in set(pending)]
+    elif len(pending) > MAX_NEW_PER_RUN:
+        slot = int(time.time()) // 21600
+        off = (slot * MAX_NEW_PER_RUN) % len(pending)
+        new_names = (pending[off:] + pending[:off])[:MAX_NEW_PER_RUN]
+    else:
+        new_names = pending
     cache = {k: v for k, v in (prev.get("icons") or {}).items() if k in new_names}
 
-    report = {"checked": len(prices), "new": len(new_names), "tier1": [],
+    report = {"checked": len(prices), "pending": len(pending),
+              "new": len(new_names), "window": list(new_names), "tier1": [],
               "tier2": [], "deferred": [], "blocked": [], "throttled": False,
               "refs_added": 0, "icons": dict(cache)}
 
@@ -339,9 +365,31 @@ def main() -> int:
         variants.setdefault(v["base"], []).append(v["rarity"])
     lone_materials = {b for b, rs in variants.items() if len(rs) == 1 and rs[0] == ""}
 
-    def blocked(h: str) -> bool:
+    # Steam icon <-> base is strictly 1:1 across the whole catalog today (302
+    # icons, 302 bases, zero collisions), and the matcher depends on it: a ref
+    # resolves a sprite to exactly ONE base. An item that reuses a known icon
+    # under a NEW base would look like tier 1 (icon already has a ref, so no ref
+    # change) while actually being unresolvable -- its cells would come back as
+    # the base that already owns that artwork, i.e. a confident mis-ID. No ref
+    # moves, so the tier-2 gate cannot see it either.
+    icon_owner = {}
+    for v in items.values():
+        if v.get("icon"):
+            icon_owner.setdefault(v["icon"], v["base"])
+
+    def base_of(h: str) -> str:
         m = NAME_RE.match(h)
-        return bool(m) and m.group(1).strip() in lone_materials
+        return m.group(1).strip() if m else h
+
+    def blocked(h: str) -> str | None:
+        """Reason this item must not be folded in unattended, or None."""
+        b = base_of(h)
+        if b in lone_materials:
+            return "would un-material an existing base"
+        owner = icon_owner.get(icons[h])
+        if owner is not None and owner != b:
+            return f"reuses {owner!r}'s artwork under a new base"
+        return None
 
     usable = [h for h in new_names if h in icons and not blocked(h)]
     t1 = [(h, icons[h]) for h in usable if icons[h] in known_icons]
@@ -349,10 +397,10 @@ def main() -> int:
     report["tier1"] = [h for h, _ in t1]
     report["tier2"] = [h for h, _ in t2]
     report["deferred"] = [h for h in new_names if h not in icons]
-    report["blocked"] = [h for h in new_names if h in icons and blocked(h)]
-    if report["blocked"]:
-        print(f"BLOCKED (would un-material an existing base, needs a human): "
-              f"{', '.join(report['blocked'])}", file=sys.stderr)
+    reasons = {h: blocked(h) for h in new_names if h in icons}
+    report["blocked"] = [h for h, r in reasons.items() if r]
+    for h in report["blocked"]:
+        print(f"BLOCKED {h}: {reasons[h]} -- needs a human", file=sys.stderr)
     report["icons"] = dict(icons)
 
     _ja = _read("ja_names.json")
