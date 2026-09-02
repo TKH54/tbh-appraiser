@@ -319,10 +319,14 @@ def main() -> int:
     # front and starve everything behind them. The offset steps by a WHOLE
     # window per 6h slot (stepping by one would take ~10 days to cover 101
     # pending items instead of two slots).
-    if prev.get("window"):
-        # phase 2 of the same run: keep phase 1's window so both phases agree
-        # even if the 6h slot ticked over between them, minus whatever phase 1
-        # already folded into items.json.
+    # Only treat a report as "phase 1 of this run" while it is fresh. In CI the
+    # workspace is new every time so this never matters, but a human re-running
+    # the script by hand would otherwise stay pinned to a window chosen days ago
+    # until they deleted the file.
+    same_run = prev.get("window") and (time.time() - float(prev.get("at") or 0)) < 3600
+    if same_run:
+        # keep phase 1's window so both phases agree even if the 6h slot ticked
+        # over between them, minus whatever phase 1 already folded in.
         still = set(pending)
         new_names = [h for h in prev["window"] if h in still]
     elif len(pending) > MAX_NEW_PER_RUN:
@@ -331,9 +335,10 @@ def main() -> int:
         new_names = (pending[off:] + pending[:off])[:MAX_NEW_PER_RUN]
     else:
         new_names = pending
-    cache = {k: v for k, v in (prev.get("icons") or {}).items() if k in new_names}
+    _want = set(new_names)
+    cache = {k: v for k, v in (prev.get("icons") or {}).items() if k in _want}
 
-    report = {"checked": len(prices), "pending": len(pending),
+    report = {"at": time.time(), "checked": len(prices), "pending": len(pending),
               "new": len(new_names), "window": list(new_names), "tier1": [],
               "tier2": [], "deferred": [], "blocked": [], "throttled": False,
               "refs_added": 0, "icons": dict(cache)}
