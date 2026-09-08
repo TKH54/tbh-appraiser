@@ -38,6 +38,9 @@ on:
       max:
         description: "max new items to fold in one run"
         default: "60"
+      gate_ref:
+        description: "branch already folded on a PC (skips every Steam lookup; CI only runs the gate and ships it)"
+        default: ""
 permissions:
   contents: write
   pull-requests: write
@@ -72,6 +75,7 @@ jobs:
       # ------------------------------------------------------------ tier 1
       - name: Fold in new grades of known bases (refs.bin untouched)
         id: t1
+        if: github.event.inputs.gate_ref == ''
         env:
           AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
         run: |
@@ -117,10 +121,48 @@ jobs:
           exit 1
 
       # ------------------------------------------------- tier 2 + the gate
+      # `gate_ref` mode exists because Steam rate-limits the shared GitHub
+      # runner IPs for hours at a time. On 2026-09-08 (Plaguelands) it refused
+      # this job twice while the same lookups ran clean from a home connection,
+      # leaving 127 listed items out of the catalog. So the fold can be done on
+      # a PC and pushed to a branch; CI then does the only part that needs
+      # secrets -- counting confident mis-IDs before and after -- and ships the
+      # branch's data files only if the gate passes. Same gate, same rule; the
+      # refs just arrive by a different road.
+      - name: Work out how many refs are up for review
+        id: plan
+        env:
+          GATE_REF: ${{ github.event.inputs.gate_ref }}
+        run: |
+          if [ -z "$GATE_REF" ]; then
+            echo "n2=${{ steps.t1.outputs.n2 }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch -q origin "$GATE_REF"
+          git show FETCH_HEAD:data/refs.bin > cand_refs.bin
+          python - >> "$GITHUB_OUTPUT" <<'PY'
+          import pathlib, sys
+          STRIDE = 4096
+          cur = pathlib.Path("data/refs.bin").read_bytes()
+          new = pathlib.Path("cand_refs.bin").read_bytes()
+          if len(cur) % STRIDE or len(new) % STRIDE:
+              sys.exit("refs.bin is not a whole number of refs")
+          # The gate's whole premise is that appending cannot move an existing
+          # ref. A branch built by hand could have rewritten one, and the
+          # mis-ID count alone would not necessarily show it, so require the
+          # candidate to literally start with what main already has.
+          if not new.startswith(cur):
+              sys.exit(f"{len(new)//STRIDE} candidate refs do not extend the "
+                       f"{len(cur)//STRIDE} on main; refusing to ship a rewrite")
+          print(f"n2={(len(new) - len(cur)) // STRIDE}")
+          PY
+          echo "refs on main: $(( $(stat -c%s data/refs.bin) / 4096 )) -> candidate: $(( $(stat -c%s cand_refs.bin) / 4096 ))"
+          rm -f cand_refs.bin
+
       # Measured BEFORE the refs change, on the same learned_seed, so the only
       # thing that differs between the two numbers is the appended refs.
       - name: Restore labels snapshot (Supabase delta fetch)
-        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
+        if: steps.plan.outputs.n2 != '0' && steps.plan.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
         id: snaprestore
         uses: actions/cache/restore@v4
         with:
@@ -129,7 +171,7 @@ jobs:
           restore-keys: labels-snapshot-
 
       - name: Seed snapshot from the release archive when cache missed
-        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true' && steps.snaprestore.outputs.cache-matched-key == ''
+        if: steps.plan.outputs.n2 != '0' && steps.plan.outputs.n2 != '' && github.event.inputs.dry_run != 'true' && steps.snaprestore.outputs.cache-matched-key == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -137,7 +179,7 @@ jobs:
           gh release download labels-archive -p labels.jsonl.gz -D .labels_snapshot -R "$GITHUB_REPOSITORY" || true
 
       - name: Confident mis-IDs BEFORE appending refs
-        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
+        if: steps.plan.outputs.n2 != '0' && steps.plan.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
         id: before
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -150,12 +192,22 @@ jobs:
           echo "rows=$(sed -n 's/.*(of \([0-9]\+\)).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
 
       - name: Append refs for brand-new artwork
-        if: steps.t1.outputs.n2 != '0' && steps.t1.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
+        if: steps.plan.outputs.n2 != '0' && steps.plan.outputs.n2 != '' && github.event.inputs.dry_run != 'true'
         id: t2
         env:
           AUTOCAT_MAX: ${{ github.event.inputs.max || '60' }}
+          GATE_REF: ${{ github.event.inputs.gate_ref }}
         run: |
           set -o pipefail
+          if [ -n "$GATE_REF" ]; then
+            # The fold already happened on the PC. Take its data files whole --
+            # ja_names.json included, since a brand-new base only gets its
+            # Japanese name from the game's own string tables.
+            git checkout FETCH_HEAD -- data/items.json data/refs.bin \
+              data/refs.json data/meta.json data/ja_names.json
+            echo "added=${{ steps.plan.outputs.n2 }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           python scripts/autocatalog.py --tier 2 --apply | tee t2.log
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib

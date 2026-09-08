@@ -27,6 +27,32 @@ Corrupted Soulstone / スキン / 統計メニュー）
 急ぎたい時は手動起動できる: `gh workflow run autocatalog.yml`
 （下見だけなら `-f dry_run=true`）
 
+### CI が Steam に 429 で弾かれる時（パッチ当日に起きる）
+
+GitHub runner の共有 IP は Steam に数時間単位でレート制限されることがある。
+2026-09-08（Plaguelands）は**2回連続で全滅**し、127件が未取込のまま残った。
+同じ検索が自宅回線からは 1件も 429 を返さなかったので、**Steam 部分だけ手元でやる**:
+
+```
+# 1. PC で畳む（自宅回線。間隔を広げると更に安全）
+AUTOCAT_SLEEP=4.0 AUTOCAT_MAX=200 python scripts/autocatalog.py --tier all --apply
+git switch -c autocatalog/<パッチ名>-<日付>
+git add data/items.json data/ja_names.json data/meta.json data/refs.bin data/refs.json
+git commit && git push -u origin HEAD
+
+# 2. ゲートと反映は CI（Supabase のラベルが要るので CI でしか測れない）
+gh workflow run autocatalog.yml -f gate_ref=autocatalog/<パッチ名>-<日付>
+```
+
+`gate_ref` を渡すと Steam 検索を一切せず、そのブランチの `refs.bin` を main のものと
+比べて**追記であることを検証**（既存 ref を書き換えていたら中止）してから、
+通常と同じ before/after の誤認識カウントを回す。PASS なら main へ、増えていれば PR。
+
+**窓のローテーションに注意**: `_autocatalog_report.json` が1時間以内に存在すると
+「同一実行の続き」とみなして同じ窓を使い回す。手で連続実行して次の塊に進めたい時は
+先に消すこと（`rm -f _autocatalog_report.json`）。残り全部を1回で畳むなら
+`AUTOCAT_MAX` を未取込件数より大きくする。
+
 ---
 
 ## 手動でやること
@@ -45,9 +71,18 @@ python localize.py          # 要 UnityPy。バンドルが見つからない時
 生成された `assets/ja_names.json` を `tbh-appraiser-site/data/ja_names.json` に**このファイルだけ**
 コピーし、`python scripts/bump_release.py` してから push。
 
-既に取り込まれたアイテムの `name_ja` は次の autocatalog 実行では埋め直されない
-（既存エントリは触らない設計）。まとめて直すなら該当アイテムを items.json から消して
-autocatalog に拾い直させるのが早い。
+**先に ja_names.json を入れてから autocatalog を回すと `nj` が一切立たない。**
+順番が逆になった場合、既に取り込まれたアイテムの `name_ja` は次の autocatalog 実行では
+埋め直されない（既存エントリは触らない設計）。その時は削除して拾い直させる必要は無く、
+オフラインで埋められる:
+
+```
+python scripts/backfill_ja.py           # 下見
+python scripts/backfill_ja.py --apply
+```
+
+`ja_names.json` から `nj` 付きエントリの日本語名だけを補い、フラグを落とす。
+既に `name_ja` を持つ行には触らないので、手で直した訳が消えることはない。
 
 ### 2. 「保留」通知が来たら判断する
 
