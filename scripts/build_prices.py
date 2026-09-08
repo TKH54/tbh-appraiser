@@ -283,7 +283,9 @@ def carry_mv_baseline(items: dict[str, dict], prev_doc: dict) -> None:
     ⚠ The carried value keeps its `m` (fresh-median) label with NO age attached,
     and consumers lean on that: realUnit() prefers m over the live ask, and
     priceThin() never badges an item that has one. That was written when the
-    enrich lap was ~1h; the lap is now ~13h (see enrich_shard), so an `m` can be
+    enrich lap was ~1h; the lap is now ~17h (see enrich_shard, which also spends
+    a couple of slots per cycle on the highest-turnover items -- where a stale
+    median costs real money -- so those come back around every ~2h), so an `m` can be
     that old. In practice it is not a regression -- the lap was already 4h of
     coverage followed by an 8h+ 429 lockout, so m was stale for longer and less
     predictably -- and realUnit's crash override still catches a market that
@@ -300,25 +302,47 @@ def carry_mv_baseline(items: dict[str, dict], prev_doc: dict) -> None:
                 v["v"] = pv["v"]
 
 
-def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
+def hot_ring(items: dict[str, dict], size: int) -> list[str]:
+    """The items the most money actually moves through, highest turnover first.
+
+    A uniform rotation spends the same budget on a ¥4.7 boot as on the coin that
+    turns over ¥300k a day, so the coin's median can sit most of a lap behind on
+    exactly the day it moves. 2026-09-08 (Plaguelands): Lv90 gear entered the
+    Immortal+ coin Offering recipes, the Empire 50th coin's real median roughly
+    doubled to ¥108, and the site still showed the carried ¥48.
+
+    Ranking by unit x 24h volume puts a couple of slots per cycle where a stale
+    number costs the most -- the top 24 carry ~56% of daily turnover, the top 10
+    alone ~44%. Items with no median yet score 0: there is nothing to keep fresh
+    until the plain lap gives them one.
+    """
+    def flow(hn: str) -> tuple:
+        v = items[hn]
+        return (-(v.get("m") or v.get("lm") or 0) * (v.get("v") or 0), hn)
+    return sorted(items, key=flow)[:size]
+
+
+def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int, int]:
     """DETAILED update: refresh median (m) + 24h volume (v) for a small ROTATING
     SHARD via per-item priceoverview, then advance the persisted offset (`_eoff`).
 
-    The catalog is ~915 items; a full per-item pass is far too slow for a ~10-min
-    job, so each run only touches PRICES_SHARD items (default 12) starting at the
-    saved offset. The whole catalog therefore cycles every ceil(N/shard) runs
-    (~13h — see the rate note below; a faster lap just gets the IP 429'd and ends
+    The catalog is ~1200 items; a full per-item pass is far too slow for a ~10-min
+    job, so each run only touches PRICES_SHARD items (default 12): a couple on the
+    hot ring (see hot_ring), the rest on the plain lap from the saved offset. The
+    whole catalog therefore cycles every ceil(N/lap slots) runs
+    (~17h — see the rate note below; a faster lap just gets the IP 429'd and ends
     up refreshing LESS per day) while the cheap sweep keeps EVERY item's lowest ask/listing fresh each
     run. Carried-but-not-refreshed items keep their previous m/v (set by
     carry_mv_baseline). A budget caps the wall clock so Steam throttling can't run
     the job long; the offset only advances by what we actually processed, so a
     short run just resumes next time. Returns the new offset."""
     if os.environ.get("PRICES_NOENRICH"):       # keepalive / pure-sweep escape hatch
-        return int(prev_doc.get("_eoff", 0) or 0)
+        return (int(prev_doc.get("_eoff", 0) or 0),
+                int(prev_doc.get("_hoff", 0) or 0))
     keys = sorted(items)
     n = len(keys)
     if not n:
-        return 0
+        return 0, 0
     # env vars may arrive as "" from workflow_dispatch inputs on non-dispatch
     # events, so coalesce empties to the defaults before parsing.
     #
@@ -337,7 +361,19 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     delay = float(os.environ.get("PRICES_DELAY") or 5.0)    # per-item pacing (s)
     deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC") or 600)
     off = int(prev_doc.get("_eoff", 0) or 0) % n
-    done = refreshed = 0
+    # A couple of slots per cycle go to the highest-turnover items instead of the
+    # plain rotation, on their own offset so each ring keeps its own place. The
+    # lap still visits every item, just ~2 slots/cycle slower: at shard 12 it
+    # stretches ~14.5h -> ~17.5h while the top 24 drop from a full lap behind to
+    # ~2h. PRICES_HOT=0 restores the pure lap if this ever needs backing out.
+    hot_n = int(os.environ.get("PRICES_HOT") or 2)
+    hot = hot_ring(items, int(os.environ.get("PRICES_HOT_POOL") or 24)) if hot_n else []
+    hoff = (int(prev_doc.get("_hoff", 0) or 0) % len(hot)) if hot else 0
+    hot_slice = [hot[(hoff + i) % len(hot)] for i in range(min(hot_n, len(hot)))]
+    lap_slice = [keys[(off + i) % n]
+                 for i in range(min(max(shard - len(hot_slice), 1), n))]
+    plan = hot_slice + lap_slice        # hot first: the probe should hit one
+    done = refreshed = lap_done = 0
     t_enrich = time.time()
     # Steam squeezes priceoverview INDEPENDENTLY of search/render (2026-08-02:
     # sweep fully healthy at 150 fresh items, yet every enrich item 429'd —
@@ -350,7 +386,9 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
     if probing:
         print(f"enrich: throttled on entry (signals={THROTTLE_SIGNALS}) -> "
               f"probing priceoverview with 1 request", file=sys.stderr)
-    while done < shard and done < n and time.time() < deadline:
+    for idx, hn in enumerate(plan):
+        if time.time() >= deadline:
+            break
         # under throttle, cut by COUNT or TIME, whichever first: priceoverview has
         # been squeezed to ~2 min/item, where the count floor alone still ate the
         # whole 600s budget and stretched the cycle to ~20 min
@@ -359,8 +397,7 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
             print(f"enrich: throttled (signals={THROTTLE_SIGNALS}) -> low-power, "
                   f"stopping after {done} items / {time.time() - t_enrich:.0f}s",
                   file=sys.stderr)
-            break               # offset advances by `done` -> the lap just resumes
-        hn = keys[(off + done) % n]
+            break           # offsets advance by what ran -> both rings resume
         v = items[hn]
         d = get("https://steamcommunity.com/market/priceoverview/",
                 appid=APPID, currency=8, market_hash_name=hn,
@@ -371,12 +408,14 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
                       f"still squeezed, skipping enrich this cycle "
                       f"(offset stays {off}, m/v keep carried values)",
                       file=sys.stderr)
-                return off          # nothing attempted -> nothing to skip past
+                return off, hoff    # nothing attempted -> nothing to skip past
             probing = False         # answering again -> resume the normal shard
             print("enrich: probe ok -> priceoverview answering, resuming shard",
                   file=sys.stderr)
         time.sleep(delay)
         done += 1
+        if idx >= len(hot_slice):
+            lap_done += 1
         if not d or not d.get("success"):
             continue                            # transient -> keep carried baseline
         refreshed += 1
@@ -391,11 +430,13 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> int:
             v["v"] = int(vol)
         else:
             v.pop("v", None)                    # no 24h sales -> clear volume
-    new_off = (off + done) % n
+    new_off = (off + lap_done) % n
+    new_hoff = ((hoff + min(done, len(hot_slice))) % len(hot)) if hot else 0
     print(f"enrich: shard={shard} attempted={done}/{n} refreshed={refreshed} "
-          f"offset {off}->{new_off} elapsed={time.time() - t0:.0f}s",
+          f"(hot {min(done, len(hot_slice))}/{len(hot)}) offset {off}->{new_off} "
+          f"hot-offset {hoff}->{new_hoff} elapsed={time.time() - t0:.0f}s",
           file=sys.stderr)
-    return new_off
+    return new_off, new_hoff
 
 
 def detect_unlocked(items: dict[str, dict]) -> bool:
@@ -565,7 +606,7 @@ def fetch_fx() -> dict:
     return {"JPY": 155.0, "CNY": 7.1, "TWD": 32.0, "KRW": 1380.0, "RUB": 90.0}
 
 
-def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx) -> None:
+def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff=0) -> None:
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "src": SOURCE,                     # ci|local — _gate() reads this to stand down
@@ -575,6 +616,7 @@ def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx) -> None:
         #                                    (site auto-drops the gacha GEX exclusion)
         "_eoff": eoff,                     # rotating enrich offset (persisted)
         "_soff": soff,                     # rotating sweep offset (persisted)
+        "_hoff": hoff,                     # rotating offset within the hot ring
         "gev": grade_averages(items, rate),
         "fx": fx,
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],
@@ -876,10 +918,11 @@ def main() -> None:
     unlocked = detect_unlocked(items)      # reads previous OUT
     unlocked3 = detect_unlocked3(items, prev_doc)
     prev_off = int(prev_doc.get("_eoff", 0) or 0)
+    prev_hoff = int(prev_doc.get("_hoff", 0) or 0)
     carry_mv_baseline(items, prev_doc)     # carry prev median/volume onto all items
     carry_last_median(items, rate)
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, unlocked3, prev_off, soff, fx)
+    write_snapshot(items, rate, unlocked, unlocked3, prev_off, soff, fx, prev_hoff)
     print(f"fast snapshot: {len(fresh)} fresh (_soff {prev_doc.get('_soff', 0) or 0}"
           f"->{soff}) / {len(items)} items, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s", file=sys.stderr)
@@ -888,13 +931,13 @@ def main() -> None:
     # rewrite. Bounded by shard size + budget so the whole job stays well under
     # the timeout; a failure here still leaves the fast snapshot on disk.
     try:
-        eoff = enrich_shard(items, prev_doc, t0)
+        eoff, hoff = enrich_shard(items, prev_doc, t0)
     except Exception as e:
         print(f"enrich_shard failed ({e}); keeping fast snapshot", file=sys.stderr)
-        eoff = prev_off
+        eoff, hoff = prev_off, prev_hoff
     carry_last_median(items, rate)         # apply lm to the freshly enriched items
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx)
+    write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff)
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
           f"unlocked3 {unlocked3}, _eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s, signals={THROTTLE_SIGNALS}"
