@@ -77,24 +77,38 @@ jobs:
       # deployment; cancelling an already-finished one just errors and is
       # ignored. NOTE: continue-on-error makes .conclusion report success, so
       # these gates must test .outcome.
+      #
+      # ⚠ NEVER cancel a commit NEWER than this run's. A Pages deployment's ID
+      # IS its commit SHA, and a SHA whose deployment was cancelled can't be
+      # deployed again: re-creating it "succeeds" but its status stays empty
+      # until the 10-min timeout. Listing from `sha=main` cancelled the commits
+      # the queued runs were about to deploy, so each failed run poisoned the
+      # next and ONE transient error became a self-sustaining freeze (2026-09-01
+      # 6h, 2026-09-14 2.5h: every hung deploy was on a SHA the previous run's
+      # clear had cancelled 12-15 s earlier; the uncancelled SHAs deployed fine).
+      # So both clears list from this run's own commit ($GITHUB_SHA) backwards,
+      # and this first one skips the own commit too, so the retry can still
+      # create it (e.g. when deploy1 died before creating anything).
       - name: Clear wedged Pages deployments
         if: steps.deploy1.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          for sha in $(gh api "repos/$REPO/commits?sha=main&per_page=6" --jq '.[].sha'); do
+          for sha in $(gh api "repos/$REPO/commits?sha=$GITHUB_SHA&per_page=7" --jq '.[1:][].sha'); do
             if gh api -X POST "repos/$REPO/pages/deployments/$sha/cancel" >/dev/null 2>&1; then
               echo "cleared wedged deployment $sha"
             fi
           done
           sleep 30
 
-      # One retry. Re-creating the SAME commit SHA does work once the backend
-      # isn't holding a wedged deployment (2026-08-06 run 31099322417: deploy1
-      # timed out at 10 min, the retry on the same SHA reported success 7 min
-      # later) — but it returns an instant "Deployment cancelled." while a wedge
-      # is live, which is why the clear step above has to come first.
+      # One retry. It helps when deploy1 never created its deployment (a
+      # transient error, or HTTP 400 "Please cancel <older SHA> first" — which
+      # the clear above just fixed). If deploy1 TIMED OUT, deploy-pages already
+      # cancelled this SHA itself, and since 2026-09 the retry then hangs the
+      # full 10 min (every such retry did on 09-01 and 09-14; on 08-06 one still
+      # succeeded) — wasted time, but harmless now that no newer commit is
+      # touched: the next push deploys a fresh SHA.
       - id: deploy2
         if: steps.deploy1.outcome == 'failure'
         uses: actions/deploy-pages@v4
@@ -102,13 +116,14 @@ jobs:
         with:
           timeout: 600000
 
+      # Own commit + older only (see the ⚠ above): never the newer commits.
       - name: Clear wedged Pages deployments (after retry)
         if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          for sha in $(gh api "repos/$REPO/commits?sha=main&per_page=6" --jq '.[].sha'); do
+          for sha in $(gh api "repos/$REPO/commits?sha=$GITHUB_SHA&per_page=6" --jq '.[].sha'); do
             if gh api -X POST "repos/$REPO/pages/deployments/$sha/cancel" >/dev/null 2>&1; then
               echo "cleared wedged deployment $sha"
             fi
