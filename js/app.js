@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626ab";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626ab";
-import { detectPageTab } from "./detect.js?v20260626ab";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626ab";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709p";
+import { Matcher, _internal } from "./recognize.js?v20260626ac";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626ac";
+import { detectPageTab } from "./detect.js?v20260626ac";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626ac";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709q";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -27,7 +27,7 @@ function netOf(price) {
 const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.26";
+const APP_VERSION = "1.7.27";
 const CHANGELOG = [
   { v: "1.7.23", d: "2026/8/19",
     ja: "最上位素材6種（原初の樹液・深淵の真珠ほか）を査定に対応。記念コインの期待値に「典型」を併記しました。",
@@ -242,11 +242,10 @@ async function refreshPrices() {
 
 // ---------------- stale-price alert ----------------
 // The price bot advances DATA.prices.t every ~8 min. If it hasn't moved in a long
-// while, the price chain has stalled — usually the automatic price update itself
-// (the Steam sweep being rate-limited on the CI runner, or a GitHub Actions/Pages
-// delay), NOT a bug in this tool. The base message stays neutral WITHOUT pinning
-// blame on any one service (CI stays green while Steam throttles, so a hardcoded
-// "GitHub outage" was misleading). The base banner is purely client-side
+// while, the price chain has stalled — Steam throttling, a GitHub Actions/Pages
+// delay, or a bug in our own pipeline (2026-09-14). The banner only sees the data's
+// age, so the base message names NO cause and promises NO duration: it states the
+// snapshot time and tells the user to check Steam before selling. The base banner is purely client-side
 // (no network, CSP-safe), so it still fires even when the site itself is served
 // stale from the CDN cache during an outage. On top of that, ONLY while the banner
 // is up, the official GitHub status API is probed: if it confirms an outage in a
@@ -282,9 +281,15 @@ function checkStale() {
   const ageMin = raw ? Math.floor((Date.now() - new Date(raw).getTime()) / 60000) : null;
   if (_staleDismissed || ageMin == null || ageMin < STALE_MIN) { el.style.display = "none"; return; }
   el.style.display = "block";
+  // last-update time in the viewer's local clock; add the date once it's not today
+  const d = new Date(raw);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const ts = d.toLocaleString(LANG, sameDay
+    ? { hour: "2-digit", minute: "2-digit" }
+    : { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
   el.innerHTML =
     `<span class="x" id="staleX" title="${esc(t("stale_dismiss"))}">✕</span>`
-    + esc(t("stale_alert")(ageMin));
+    + esc(t("stale_alert")(ts));
   $("staleX").onclick = () => { _staleDismissed = true; el.style.display = "none"; };
   // render the neutral banner first, then append the GitHub line only if the
   // official status page confirms it (never claim an outage on a failed probe)
