@@ -80,6 +80,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
+          set -o pipefail   # a Python error must reach the failure notification
           mkdir -p .labels_snapshot
           python scripts/promote_labels.py --k "${{ github.event.inputs.k || '3' }}" --safe-only | tee /tmp/promote.log
 
@@ -229,7 +230,7 @@ jobs:
         run: |
           [ -z "$DISCORD_WEBHOOK" ] && exit 0
           jq -n --arg c "✅ **クラウドラベル昇格**：Safe PR #${{ steps.cpr.outputs.pull-request-number }} を自動マージしました（Quarantine保留: ${{ steps.promote.outputs.quarantine }}件 / Safe: ${{ steps.trim.outputs.survivors }}件）。$RUN_URL" '{content:$c}' \
-            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
 
       - name: Notify Discord — failure
         if: failure()
@@ -239,4 +240,4 @@ jobs:
         run: |
           [ -z "$DISCORD_WEBHOOK" ] && exit 0
           jq -n --arg c "❌ **クラウドラベル昇格が失敗**（${{ github.ref_name }}）。offender-trimが0に到達できない/スクリプトエラー等の可能性。自動マージはされていません。要確認 → $RUN_URL" '{content:$c}' \
-            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"

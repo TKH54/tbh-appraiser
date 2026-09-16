@@ -163,4 +163,4 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           [ -z "$DISCORD_WEBHOOK" ] && exit 0
-          jq -n --arg c "⚠️ **価格スナップショットCIが失敗/キャンセル**。自動更新チェーンが止まった可能性（価格が固まる）。GitHub Actions障害時によく起きます。復旧後に \`gh workflow run prices.yml\` で再点火 → $RUN_URL" '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+          jq -n --arg c "⚠️ **価格スナップショットCIが失敗/キャンセル**。自動更新チェーンが止まった可能性（価格が固まる）。GitHub Actions障害時によく起きます。復旧後に \`gh workflow run prices.yml\` で再点火 → $RUN_URL" '{content:$c}' | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"

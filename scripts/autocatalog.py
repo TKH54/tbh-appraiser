@@ -119,7 +119,7 @@ REPORT = ROOT / "_autocatalog_report.json"
 
 
 class Throttled(Exception):
-    """Steam kept refusing us; give up for this run and retry on the next one."""
+    """A transient Steam failure persisted; hold this run and retry next time."""
 
 
 # ---------------------------------------------------------------- file I/O
@@ -148,27 +148,48 @@ def _session() -> requests.Session:
     return s
 
 
-def _get(sess, url, params=None, tries=4):
-    """GET with backoff on 429. Raises Throttled once the run has collected
-    MAX_429 refusals in total, which is the signal that backing off further is
-    pointless and the job should just come back next schedule."""
+def _get(sess, url, params=None, tries=4, *, json_response=False):
+    """One bounded retry budget for HTTP and transient search-response failures."""
     delay = 5.0
-    r = None
-    for _ in range(tries):
+    reason = "no response"
+    for attempt in range(tries):
         try:
             r = sess.get(url, params=params, timeout=25)
         except requests.RequestException:
+            if attempt == tries - 1:
+                raise  # exhausted transport retries are an unexpected failure
+        else:
+            # 429/5xx/non-JSON/success:false are transient; other 4xx/schema/code errors must fail loudly.
+            if r.status_code == 429:
+                sess.n429 += 1
+                if sess.n429 >= MAX_429:
+                    raise Throttled(f"{sess.n429} rate-limit replies this run")
+                reason = "HTTP 429"
+            elif 500 <= r.status_code < 600:
+                reason = f"HTTP {r.status_code}"
+            else:
+                r.raise_for_status()
+                if not json_response:
+                    return r
+                try:
+                    d = r.json()
+                except ValueError:
+                    reason = "non-JSON reply"
+                else:
+                    if not isinstance(d, dict) or "success" not in d:
+                        raise ValueError("Steam search reply has no success field")
+                    if d["success"] is False or d["success"] == 0:
+                        reason = "success:false"
+                    elif d["success"] is True or d["success"] == 1:
+                        if not isinstance(d.get("results"), list):
+                            raise ValueError("Steam search results is not a list")
+                        return d
+                    else:
+                        raise ValueError("Steam search success field is invalid")
+        if attempt < tries - 1:
             time.sleep(delay)
             delay *= 3
-            continue
-        if r.status_code != 429:
-            return r
-        sess.n429 += 1
-        if sess.n429 >= MAX_429:
-            raise Throttled(f"{sess.n429} rate-limit replies this run")
-        time.sleep(delay)
-        delay *= 3
-    return r
+    raise Throttled(f"temporary Steam failure after {tries} attempts: {reason}")
 
 
 def resolve_icons(sess, names: list[str], cache: dict) -> dict[str, str]:
@@ -198,19 +219,10 @@ def resolve_icons(sess, names: list[str], cache: dict) -> dict[str, str]:
             time.sleep(REQ_SLEEP)
         found = False
         for start in (0, 10):
-            r = _get(sess, SEARCH, params={
+            d = _get(sess, SEARCH, params={
                 "appid": APPID, "norender": 1, "count": 10,
-                "start": start, "query": h})
-            if r is None or r.status_code != 200:
-                print(f"  ! {h}: HTTP {getattr(r, 'status_code', 'error')}",
-                      file=sys.stderr)
-                break
-            try:
-                d = r.json()
-            except ValueError:
-                print(f"  ! {h}: non-JSON reply", file=sys.stderr)
-                break
-            results = d.get("results") or []
+                "start": start, "query": h}, json_response=True)
+            results = d["results"]
             for res in results:
                 if res.get("hash_name") == h:
                     icon = (res.get("asset_description") or {}).get("icon_url", "")
@@ -496,8 +508,9 @@ def main() -> int:
                   file=sys.stderr)
             report["throttled"] = True
         except requests.RequestException as e:
-            print(f"sprite fetch failed ({e}); keeping what we packed",
+            print(f"sprite fetch failed ({e}); refusing to report success",
                   file=sys.stderr)
+            raise
         report["refs_added"] = added
         if t2_written:
             # Items can be written without a single ref being appended (every

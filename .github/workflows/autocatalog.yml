@@ -64,6 +64,21 @@ jobs:
       # catalog.py + matcher.py did; headless keeps the install small.
       - run: pip install --quiet requests pillow numpy opencv-python-headless
 
+      # Observe ALL missing names before Steam can throttle or a script can die.
+      # Immutable run/attempt keys + restore prefix carry age and daily dedupe.
+      - name: Restore pending notification state
+        if: github.event.inputs.dry_run != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .autocatalog_notify/state.json
+          key: autocatalog-notify-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: autocatalog-notify-v1-
+
+      - name: Observe pending catalog items without Steam
+        id: observe
+        if: github.event.inputs.dry_run != 'true'
+        run: python scripts/autocatalog_notify.py observe
+
       # Runs before anything touches Steam or the data files. The three blocked
       # rules are the only thing standing between this job and a class of
       # mis-ID the tier-2 gate structurally cannot catch, and they are easy to
@@ -86,6 +101,7 @@ jobs:
             FLAG="--apply"
           fi
           python scripts/autocatalog.py --tier 1 $FLAG | tee t1.log
+          cp _autocatalog_report.json _autocatalog_t1_report.json
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, pathlib
           r = json.loads(pathlib.Path("_autocatalog_report.json").read_text(encoding="utf-8"))
@@ -98,6 +114,7 @@ jobs:
           PY
 
       - name: Push the tier-1 additions
+        id: push1
         if: steps.t1.outputs.n1 != '0' && steps.t1.outputs.n1 != '' && github.event.inputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -256,6 +273,7 @@ jobs:
           fi
 
       - name: Push the new refs (gate passed)
+        id: push2
         if: steps.gate.outputs.verdict == 'pass'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -305,7 +323,7 @@ jobs:
 
       # ----------------------------------------------------------- notify
       - name: Tell Discord what happened
-        if: always() && github.event.inputs.dry_run != 'true'
+        if: success() && github.event.inputs.dry_run != 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -313,20 +331,14 @@ jobs:
           if [ -z "$DISCORD_WEBHOOK" ]; then exit 0; fi
           N1="${{ steps.t1.outputs.n1 }}"; N2="${{ steps.t2.outputs.added }}"
           V="${{ steps.gate.outputs.verdict }}"; DEF="${{ steps.t1.outputs.deferred }}"
-          BLK="${{ steps.t1.outputs.blocked }}"
           # Silence is the point on a normal day: only speak when something
           # actually changed or needs a human. (Full if-blocks rather than bare
           # `test && cmd` lines: under bash -e that form is fine mid-script, but
           # as the LAST line of a step its false status becomes the step's exit
           # code and fails the job. Keeping one style avoids that edge.)
           if [ "${N1:-0}" = "0" ] && [ "${N2:-0}" = "0" ] && [ -z "$V" ]; then
-            # Nothing shipped. A blocked item stays blocked until a human acts,
-            # so pinging every 6h would train us to ignore the channel -- the
-            # exact failure the old stale-price alert had. Once a day is enough.
-            if [ "${BLK:-0}" != "0" ] && [ "$(date -u +%H)" = "03" ]; then
-              jq -n --arg c "⚠ **自動追加を保留中のアイテムが ${BLK} 件あります**（既存の認識を壊す可能性があるため手動判断が必要）→ $RUN_URL" \
-                '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
-            fi
+            # The independent digest below covers blocked AND unclassified
+            # pending names, even when throttling left these outputs at zero.
             exit 0
           fi
           MSG="🆕 **新アイテムをカタログに自動追加**"
@@ -343,4 +355,35 @@ jobs:
           fi
           MSG="$MSG"$'\n'"→ $RUN_URL"
           jq -n --arg c "$MSG" '{content:$c}' | \
-            curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+
+      - name: Daily pending digest (also after throttling or a script failure)
+        if: always() && steps.observe.outcome == 'success'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PUSH1: ${{ steps.push1.outcome }}
+          PUSH2: ${{ steps.push2.outcome }}
+        run: python scripts/autocatalog_notify.py notify
+
+      - name: Save pending notification state
+        if: always() && steps.observe.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .autocatalog_notify/state.json
+          key: autocatalog-notify-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # One immediate failure notification per run attempt, independent of t1
+      # outputs and of the daily pending digest. Hard runner kills remain best-effort.
+      - name: Notify Discord on unexpected failure or cancellation
+        if: failure() || cancelled()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "::error::DISCORD_WEBHOOK is missing; failure alert was not sent"
+            exit 1
+          fi
+          jq -n --arg c "❌ **自動カタログ追加が失敗/キャンセル**。処理途中で止まっています。実行ログを確認してください → $RUN_URL" \
+            '{content:$c}' | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"

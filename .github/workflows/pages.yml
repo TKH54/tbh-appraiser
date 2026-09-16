@@ -154,6 +154,6 @@ jobs:
           fi
           if [ -n "$DISCORD_WEBHOOK" ]; then
             jq -n --arg c "❌ **サイトのデータが${AGE}分前で止まっています**（Pagesデプロイが継続失敗）→ $RUN_URL" \
-              '{content:$c}' | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+              '{content:$c}' | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
           fi
           exit 1

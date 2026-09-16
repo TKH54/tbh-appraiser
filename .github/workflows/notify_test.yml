@@ -16,5 +16,5 @@ jobs:
         run: |
           if [ -z "$DISCORD_WEBHOOK" ]; then echo "::error::DISCORD_WEBHOOK secret is empty"; exit 1; fi
           jq -n --arg c "🔔 **テスト通知**: Discord連携は正常です（価格の見張り番・CI障害通知はこのチャンネルに届きます）" '{content:$c}' \
-            | curl -sf -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
           echo "sent"

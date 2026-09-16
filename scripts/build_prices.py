@@ -52,6 +52,9 @@ LOCAL_FRESH_SEC = 1800                   # local runner is "delivering" if t is 
 STALE_ALERT_SEC = 7200                   # t older than this -> phone AND CI are both failing;
 #                                          ping Discord so the user can reboot the phone
 STALE_ALERT_REPEAT_SEC = 43200           # ...re-ping at most every 12h while it stays stale
+ENRICH_STALE_SEC = 21600                # allow known, self-healing priceoverview throttles lasting several hours
+ENRICH_ALERT_REPEAT_SEC = 86400         # one digest per day during a detail outage
+ENRICH_REFRESHED = 0                    # one success counter, retained for main even if enrich raises midway
 PACE_SEC = 180                           # push-chain startup pacing -> ~10-min cadence
 HEARTBEAT_SLEEP = 540                    # during cooldown: nap this long then re-fire the
 #                                          chain WITHOUT hitting Steam (GitHub's cron does
@@ -336,6 +339,8 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
     carry_mv_baseline). A budget caps the wall clock so Steam throttling can't run
     the job long; the offset only advances by what we actually processed, so a
     short run just resumes next time. Returns the new offset."""
+    global ENRICH_REFRESHED
+    ENRICH_REFRESHED = 0
     if os.environ.get("PRICES_NOENRICH"):       # keepalive / pure-sweep escape hatch
         return (int(prev_doc.get("_eoff", 0) or 0),
                 int(prev_doc.get("_hoff", 0) or 0))
@@ -373,7 +378,7 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
     lap_slice = [keys[(off + i) % n]
                  for i in range(min(max(shard - len(hot_slice), 1), n))]
     plan = hot_slice + lap_slice        # hot first: the probe should hit one
-    done = refreshed = lap_done = 0
+    done = lap_done = 0
     t_enrich = time.time()
     # Steam squeezes priceoverview INDEPENDENTLY of search/render (2026-08-02:
     # sweep fully healthy at 150 fresh items, yet every enrich item 429'd —
@@ -418,7 +423,6 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
             lap_done += 1
         if not d or not d.get("success"):
             continue                            # transient -> keep carried baseline
-        refreshed += 1
         m = re.search(r"[\d,.]+", d.get("median_price") or "")
         if m:
             v["m"] = float(m.group(0).replace(",", ""))
@@ -430,9 +434,10 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
             v["v"] = int(vol)
         else:
             v.pop("v", None)                    # no 24h sales -> clear volume
+        ENRICH_REFRESHED += 1
     new_off = (off + lap_done) % n
     new_hoff = ((hoff + min(done, len(hot_slice))) % len(hot)) if hot else 0
-    print(f"enrich: shard={shard} attempted={done}/{n} refreshed={refreshed} "
+    print(f"enrich: shard={shard} attempted={done}/{n} refreshed={ENRICH_REFRESHED} "
           f"(hot {min(done, len(hot_slice))}/{len(hot)}) offset {off}->{new_off} "
           f"hot-offset {hoff}->{new_hoff} elapsed={time.time() - t0:.0f}s",
           file=sys.stderr)
@@ -670,10 +675,15 @@ def _post_discord(msg: str) -> bool:
     if not hook:
         return False
     try:
-        requests.post(hook, json={"content": msg}, timeout=15)
+        response = requests.post(hook, json={"content": msg}, timeout=15,
+                                 allow_redirects=False)
+        if not 200 <= response.status_code < 300:
+            print(f"discord alert failed: HTTP {response.status_code}", file=sys.stderr)
+            return False
         return True
     except Exception as e:
-        print(f"discord alert failed: {e}", file=sys.stderr)
+        # Request exceptions can contain the secret webhook URL.
+        print(f"discord alert failed: {type(e).__name__}", file=sys.stderr)
         return False
 
 
@@ -779,13 +789,86 @@ def _maybe_alert_stale() -> None:
     msg = (f"📵 **価格が約{int(age / 3600)}時間更新されていません**（最終更新元: {src}）。"
            f"スマホランナーが止まっている可能性が高いです。スマホの再起動（または充電/Wi-Fi確認）"
            f"で自動復旧します。CIフォールバックはSteamに弾かれがちなので当てにしないでください。")
-    try:
-        requests.post(hook, json={"content": msg}, timeout=15)
+    if _post_discord(msg):
         print(f"stale alert sent (t {int(age / 60)}min old)", file=sys.stderr)
-    except Exception as e:
-        print(f"stale alert failed: {e}", file=sys.stderr)
-    state["last_stale_alert_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        state["last_stale_alert_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _write_state(state)
+
+
+def _record_enrich_health(refreshed: int, error: str | None) -> None:
+    """Both runners publish health in the already-persisted price_state.json.
+
+    Offsets count attempted slots, so they can move even if every request failed.
+    A successful reply with no sales is still healthy; price/volume need not change.
+    """
+    now = time.time()
+    state = _load_state()
+    state.setdefault("enrich_watch_since", now)
+    state["enrich_checked_at"] = now
+    if refreshed:
+        state["enrich_success_at"] = now
+    if error:
+        if not state.get("enrich_error_since"):
+            state["enrich_error_since"] = now
+        state["enrich_error"] = error
+    elif refreshed:
+        state.pop("enrich_error_since", None)
+        state.pop("enrich_error", None)
     _write_state(state)
+
+
+def _maybe_alert_enrich(*, persist_observations: bool = True) -> bool:
+    """CI also watches while on standby; no Steam request is needed.
+
+    Legacy snapshots (before success telemetry exists) use _eoff movement as
+    provisional evidence. Once upgraded, ONLY actual success resets the clock.
+    Returns whether a notification was delivered. A skipped cron saves ONLY
+    delivery markers; observation-only changes must never restart the chain.
+    """
+    if SOURCE != "ci":
+        return False
+    now = time.time()
+    state = _load_state()
+    before = dict(state)
+    sent = False
+    state.setdefault("enrich_watch_since", now)
+    try:
+        doc = json.loads(OUT.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = {}
+    offset = doc.get("_eoff")
+    if offset is not None:
+        if ("enrich_offset" in state and state["enrich_offset"] != offset
+                and not state.get("enrich_checked_at")):
+            state["enrich_watch_since"] = now
+        state["enrich_offset"] = offset
+    since = state.get("enrich_success_at", state["enrich_watch_since"])
+    age = max(0, now - since)
+    error_since = state.get("enrich_error_since")
+    new_error = error_since and state.get("enrich_error_notified") != error_since
+    pt, _ = _prev_snapshot_meta()
+    # The existing stale-t alert covers a whole-source outage. Report a detail
+    # exception immediately; otherwise avoid two daily warnings for the same stop.
+    detail_stale = age >= ENRICH_STALE_SEC and pt is not None and now - pt < STALE_ALERT_SEC
+    repeat_due = now - state.get("last_enrich_alert_at", 0) >= ENRICH_ALERT_REPEAT_SEC
+    if new_error or ((detail_stale or error_since) and repeat_due):
+        reason = ("詳細取得のスクリプトでエラーが発生しました。" if error_since
+                  else f"詳細取得の成功を約{int(age / 3600)}時間確認できていません。")
+        msg = ("⚠ **価格の詳細更新に問題があります**。" + reason
+               + "価格全体の更新日時が新しくても、中央値・24h出来高は古い可能性があります。"
+               "実行ログのenrichを確認してください。継続中の通知は24時間に1回です。")
+        if _post_discord(msg):
+            sent = True
+            state["last_enrich_alert_at"] = now
+            if error_since:
+                state["enrich_error_notified"] = error_since
+    if not persist_observations:
+        markers = {k: state[k] for k in ("last_enrich_alert_at", "enrich_error_notified")
+                   if k in state}
+        state = {**before, **markers} if sent else before
+    if state != before:
+        _write_state(state)
+    return sent
 
 
 def _gate() -> str:
@@ -888,7 +971,10 @@ def main() -> None:
     t0 = time.time()
     _maybe_alert_stale()
     action = _gate()
+    alert_sent = _maybe_alert_enrich(persist_observations=action != "skip")
     if action == "skip":
+        if alert_sent:
+            _set_mode("stateonly")  # delivery markers only; no observation/heartbeat commit
         print("skipped (gate)", file=sys.stderr)
         return
     if action == "heartbeat":
@@ -930,11 +1016,15 @@ def main() -> None:
     # PHASE 2 — DETAIL: refresh a small rotating shard's median/volume, then
     # rewrite. Bounded by shard size + budget so the whole job stays well under
     # the timeout; a failure here still leaves the fast snapshot on disk.
+    enrich_error = None
     try:
         eoff, hoff = enrich_shard(items, prev_doc, t0)
     except Exception as e:
         print(f"enrich_shard failed ({e}); keeping fast snapshot", file=sys.stderr)
         eoff, hoff = prev_off, prev_hoff
+        enrich_error = type(e).__name__
+    _record_enrich_health(ENRICH_REFRESHED, enrich_error)
+    _maybe_alert_enrich()  # immediate CI error ping; phone errors are relayed next CI run
     carry_last_median(items, rate)         # apply lm to the freshly enriched items
     update_history(items, rate)
     write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff)

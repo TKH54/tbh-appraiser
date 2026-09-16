@@ -74,7 +74,7 @@ jobs:
         run: |
           [ -z "$DISCORD_WEBHOOK" ] && exit 0
           jq -n --arg c "↩️ **バッチ ${{ github.event.inputs.batch }} をロールバック**：${{ steps.rb.outputs.removed }}件削除（残り ${{ steps.rb.outputs.remaining }}）。${{ github.event.inputs.dry_run == 'true' && '（dry-run・PRなし）' || 'PR作成済み、マージで反映' }} → $RUN_URL" '{content:$c}' \
-            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
 
       - name: Notify Discord — failure
         if: failure()
@@ -84,4 +84,4 @@ jobs:
         run: |
           [ -z "$DISCORD_WEBHOOK" ] && exit 0
           jq -n --arg c "❌ **バッチロールバックが失敗**（batch ${{ github.event.inputs.batch }} — 見つからない/エラー）→ $RUN_URL" '{content:$c}' \
-            | curl -s -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+            | curl -fSs --connect-timeout 10 --max-time 30 -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
