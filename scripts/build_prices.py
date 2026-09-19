@@ -432,7 +432,14 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
     # starts, the count/time floors are the wrong tool: they buy nothing and cost
     # the most. Spend ONE uncapped-retry-free probe instead — recovery is still
     # noticed every single cycle, but a live squeeze now costs ~1 request.
-    probing = _throttled()
+    # ...OR when the last cycle already proved priceoverview is refusing. Reading
+    # only THROTTLE_SIGNALS made the probe depend on some EARLIER caller having
+    # been refused first, which stopped being true the moment derive_rate learned
+    # to stand down: a healthy sweep left signals at 0, enrich entered at full
+    # power and spent the squeeze on retry chains instead of one probe (measured
+    # 2026-09-20 08:16 — hot ring advanced 2 slots, refreshed nothing, and left
+    # the previous cycle's reason behind as if nothing had happened).
+    probing = _throttled() or _priceoverview_squeezed()
     if probing:
         print(f"enrich: throttled on entry (signals={THROTTLE_SIGNALS}) -> "
               f"probing priceoverview with 1 request", file=sys.stderr)
@@ -444,6 +451,10 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
         # whole 600s budget and stretched the cycle to ~20 min
         if _throttled() and (done >= THROTTLED_MIN_ENRICH
                              or time.time() - t_enrich > THROTTLED_ENRICH_BUDGET_SEC):
+            # Recorded too, so a zero-refresh cycle never leaves an older reason
+            # standing and looking current.
+            ENRICH_SKIP_REASON = (f"throttled after {done} items "
+                                  f"(signals={THROTTLE_SIGNALS})")
             print(f"enrich: throttled (signals={THROTTLE_SIGNALS}) -> low-power, "
                   f"stopping after {done} items / {time.time() - t_enrich:.0f}s",
                   file=sys.stderr)

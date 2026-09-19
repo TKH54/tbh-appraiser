@@ -42,7 +42,7 @@ def harness():
               OUT=SimpleNamespace(read_text=lambda **kw: json.dumps(doc)),
               _prev_snapshot_meta=lambda: (now[0], "local"),
               _throttled=lambda: False, APPID=3678970, THROTTLE_SIGNALS=0,
-              ENRICH_REFRESHED=0, ENRICH_SKIP_REASON="")
+              ENRICH_REFRESHED=0, ENRICH_SKIP_REASON="", LAST_GET_ERROR=None)
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -246,6 +246,42 @@ class EnrichTests(unittest.TestCase):
         self.ns["SOURCE"] = "ci"
         self.watch()
         self.post.assert_called_once()
+
+    def test_a_recorded_squeeze_keeps_enrich_to_one_probe(self):
+        """Once a cycle has proved priceoverview is refusing, the next spends ONE
+        request finding out whether that changed -- not a retry chain per item.
+        Keying only off THROTTLE_SIGNALS made this depend on an earlier caller
+        having been refused first, which stopped being true the moment
+        derive_rate learned to stand down: on 2026-09-20 08:16 a healthy sweep
+        let enrich in at full power, advance the hot ring two slots and refresh
+        nothing."""
+        self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=5)"
+        self.record()                         # last cycle was refused
+        calls = []
+        self.ns["get"] = lambda *a, **kw: (calls.append(kw.get("market_hash_name")),
+                                           {"success": False})[1]
+        items = {f"item{i:03d}": {"usd": 1, "q": 1, "m": 1, "v": 1} for i in range(100)}
+        off, hoff = self.ns["enrich_shard"](items, {"_eoff": 7, "_hoff": 3}, self.now[0])
+        self.assertEqual(len(calls), 1)       # one probe, not a shard
+        self.assertEqual((off, hoff), (7, 3))  # neither ring moved past anything
+        self.assertEqual(self.ns["ENRICH_REFRESHED"], 0)
+        self.assertIn("probe", self.ns["ENRICH_SKIP_REASON"])
+
+    def test_a_probe_that_answers_resumes_the_shard(self):
+        """Recovery is still noticed every single cycle -- that is what buys the
+        right to stand down in the first place."""
+        self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=5)"
+        self.record()
+        calls = []
+        self.ns["get"] = lambda *a, **kw: (calls.append(1),
+                                           {"success": True, "median_price": "10",
+                                            "volume": "5"})[1]
+        items = {f"item{i:03d}": {"usd": 1, "q": 1} for i in range(100)}
+        self.ns["os"].environ.update(PRICES_SHARD="12", PRICES_HOT="2")
+        off, _ = self.ns["enrich_shard"](items, {"_eoff": 0, "_hoff": 0}, self.now[0])
+        self.assertEqual(len(calls), 12)
+        self.assertEqual(self.ns["ENRICH_REFRESHED"], 12)
+        self.assertNotEqual(off, 0)
 
     def test_real_enrich_counts_success_not_attempts_or_price_changes(self):
         items = {f"item{i:03d}": {"usd": 1, "q": 1} for i in range(100)}
