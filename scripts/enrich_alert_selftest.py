@@ -26,7 +26,8 @@ SOURCE = (subprocess.check_output(["git", "show", f"{ARGS.revision}:{PATH}"], en
 
 def harness():
     names = {"_post_discord", "_maybe_alert_stale", "_record_enrich_health",
-             "_maybe_alert_enrich", "enrich_shard", "hot_ring"}
+             "_maybe_alert_enrich", "enrich_shard", "hot_ring",
+             "_priceoverview_squeezed"}
     tree = ast.parse(SOURCE)
     defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     if ARGS.revision and not names.issubset({n.name for n in defs}):
@@ -47,7 +48,8 @@ def harness():
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id in {
                         "STALE_ALERT_SEC", "STALE_ALERT_REPEAT_SEC",
-                        "ENRICH_STALE_SEC", "ENRICH_ALERT_REPEAT_SEC"}:
+                        "ENRICH_STALE_SEC", "ENRICH_ALERT_REPEAT_SEC",
+                        "PRICEOVERVIEW_SQUEEZE_SEC"}:
                     ns[target.id] = ast.literal_eval(node.value)
     exec(compile(ast.Module(body=defs, type_ignores=[]), PATH, "exec"), ns)
     return ns, now, state, doc, messages
@@ -75,6 +77,36 @@ class EnrichTests(unittest.TestCase):
         self.watch()
         self.post.assert_not_called()
         self.assertNotIn("enrich_error", self.state)
+
+    def test_a_live_squeeze_costs_one_request_not_five(self):
+        """The rate probe runs BEFORE enrich out of the same budget. Once a cycle
+        has recorded a refused probe, the next one must not re-buy that knowledge
+        -- that is what kept the 2026-09-20 squeeze alive at 4 wasted requests a
+        cycle while the sweep was perfectly healthy."""
+        squeezed = self.ns["_priceoverview_squeezed"]
+        self.assertFalse(squeezed())                      # nothing recorded yet
+        self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=5)"
+        self.record()
+        self.assertTrue(squeezed())
+        # ...but the enrich probe still runs every cycle, so recovery clears it
+        self.ns["ENRICH_SKIP_REASON"] = ""
+        self.record(count=1)
+        self.assertFalse(squeezed())
+
+    def test_a_stale_squeeze_verdict_expires(self):
+        """A runner that stopped for a day must not start up trusting yesterday's
+        verdict; after the window it pays for a real probe again."""
+        self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=5)"
+        self.record()
+        self.assertTrue(self.ns["_priceoverview_squeezed"]())
+        self.now[0] += self.ns["PRICEOVERVIEW_SQUEEZE_SEC"] + 1
+        self.assertFalse(self.ns["_priceoverview_squeezed"]())
+
+    def test_a_non_probe_skip_does_not_gate_the_rate(self):
+        """PRICES_NOENRICH is a local escape hatch, not evidence about Steam."""
+        self.ns["ENRICH_SKIP_REASON"] = "PRICES_NOENRICH set"
+        self.record()
+        self.assertFalse(self.ns["_priceoverview_squeezed"]())
 
     def test_a_success_clears_the_skip_reason(self):
         self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=4)"

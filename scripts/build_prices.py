@@ -107,10 +107,34 @@ THROTTLED_ENRICH_BUDGET_SEC = 120        # once throttled, enrich is cut by TIME
 THROTTLED_GET_ATTEMPTS = 2               # once throttled, stop retry-chaining each request
 #                                          (5 attempts + backoffs = ~2 min on ONE item; a
 #                                          missed item just keeps its carried value)
+PRICEOVERVIEW_SQUEEZE_SEC = 900          # trust a recorded priceoverview refusal this long
+#                                          (~1.5 cycles), then probe normally again
 
 
 def _throttled() -> bool:
     return THROTTLE_SIGNALS >= THROTTLED_AT
+
+
+def _priceoverview_squeezed() -> bool:
+    """Did LAST cycle's enrich probe come back refused?
+
+    THROTTLE_SIGNALS is per-process, so every run rediscovers a squeeze from
+    scratch — and the rate probe, which runs first, pays for that discovery out
+    of the same priceoverview budget enrich needs. On 2026-09-20 the phone spent
+    4 requests a cycle proving what the previous cycle already knew (measured:
+    `probe HTTP 429 (signals=5)` — the sweep contributed ZERO, all five came from
+    the rate probe and the enrich probe itself), and the squeeze outlived every
+    one of them. Reading the last cycle's verdict out of price_state.json makes
+    a live squeeze cost the ONE probe request it was designed to cost, and the
+    probe still runs, so recovery is still noticed every single cycle.
+    """
+    state = _load_state()
+    if "probe" not in (state.get("enrich_last_skip") or ""):
+        return False        # cleared by any successful enrich
+    try:
+        return time.time() - float(state.get("enrich_checked_at") or 0) < PRICEOVERVIEW_SQUEEZE_SEC
+    except (TypeError, ValueError):
+        return False
 
 
 def get(url, *, max_attempts=None, **params):
@@ -259,9 +283,13 @@ def derive_rate(items: dict[str, dict]):
     itself — sat frozen for hours while the sweep stayed perfectly healthy. Capped,
     the same stretch costs 4 requests and ~6s. Missing is free: sane_rate carries
     the previous rate, which is why this returns None rather than trying harder."""
-    if _throttled():
+    if _throttled() or _priceoverview_squeezed():
         return None             # skip the probe under throttle; the rate is stable
-        #                         and sane_rate carries the previous one anyway
+        #                         and sane_rate carries the previous one anyway.
+        #                         Carrying costs almost nothing: through the
+        #                         2026-09-20 squeeze the carried 158.03 stayed
+        #                         within 0.62% of market fx, well inside the 4%
+        #                         band sane_rate would have accepted anyway.
     candidates = sorted(items.items(), key=lambda kv: -kv[1]["q"])
     candidates = [kv for kv in candidates if kv[1]["usd"] >= 1.0][:10] or candidates[:10]
     candidates.sort(key=lambda kv: -kv[1]["usd"])
