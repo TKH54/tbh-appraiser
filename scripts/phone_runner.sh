@@ -64,7 +64,13 @@ cycle() {
     for i in 1 2 3; do
         git fetch --depth 1 origin main >>"$LOG" 2>&1
         git reset --hard origin/main >>"$LOG" 2>&1
-        cp "$STASH"/prices.json "$STASH"/history.json "$STASH"/price_state.json data/
+        cp "$STASH"/prices.json "$STASH"/history.json data/
+        # price_state.json is shared with the CI chain, which records its own alert
+        # markers while we are the price source. Laying ours down wholesale would
+        # revert them (and CI doing the same to us caused the false detail alert of
+        # 2026-09-19), so merge field by field instead.
+        python scripts/merge_price_state.py "$STASH"/price_state.json data/price_state.json \
+            >>"$LOG" 2>&1 || { log "state merge failed"; return 1; }
         git add data/prices.json data/history.json data/price_state.json
         if git diff --cached --quiet; then log "no change to commit"; return 0; fi
         git commit -q -m "price snapshot (local)"

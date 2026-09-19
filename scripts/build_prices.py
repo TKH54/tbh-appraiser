@@ -243,7 +243,20 @@ def derive_rate(items: dict[str, dict]):
     (e.g. $0.05 vs ¥10 would read as 200). Returns None if it can't derive one
     (throttled/down) — the caller then keeps the last known rate rather than
     grinding through retries and slowing the fast phase. The rate is stable, so a
-    carried value is fine."""
+    carried value is fine.
+
+    One attempt per candidate, no retry chain. This probe sits between the sweep
+    and enrich_shard and shares priceoverview's budget with it, so an uncapped call
+    here does not just cost time. While priceoverview is refusing, the retry chain
+    burns 9 requests and ~3.5 min of backoff every cycle (3 on the first candidate,
+    then 2 each as THROTTLED_GET_ATTEMPTS cuts in) — poured into the exact bucket
+    enrich needs next, and THROTTLE_SIGNALS does not survive the process, so the
+    next run starts clean and does it again. On 2026-09-20 that was self-sustaining:
+    enrich_shard found itself throttled ON ENTRY, spent its single probe on a 429
+    and returned without advancing either ring, so median/24h volume — and the rate
+    itself — sat frozen for hours while the sweep stayed perfectly healthy. Capped,
+    the same stretch costs 4 requests and ~6s. Missing is free: sane_rate carries
+    the previous rate, which is why this returns None rather than trying harder."""
     if _throttled():
         return None             # skip the probe under throttle; the rate is stable
         #                         and sane_rate carries the previous one anyway
@@ -254,7 +267,7 @@ def derive_rate(items: dict[str, dict]):
         if v["usd"] <= 0:
             continue
         d = get("https://steamcommunity.com/market/priceoverview/",
-                appid=APPID, currency=8, market_hash_name=hash_name)
+                appid=APPID, currency=8, market_hash_name=hash_name, max_attempts=1)
         if d and d.get("success") and d.get("lowest_price"):
             m = re.search(r"[\d,.]+", d["lowest_price"])
             if m:

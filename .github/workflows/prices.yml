@@ -126,6 +126,11 @@ jobs:
           # scratch, so never rebase it — take the remote tip and lay our files on top.
           # A "stateonly" (failed) run stages price_state.json ONLY, so it can't clobber
           # a concurrent snapshot's prices.json.
+          # price_state.json is the ONE file we must not lay down wholesale: it is a
+          # shared health record the phone writes too, so it is MERGED field by field
+          # (scripts/merge_price_state.py). Overwriting it is what re-buried the
+          # phone's fresh enrich_success_at under this chain's own stale heartbeat
+          # and fired a false detail alert on 2026-09-19.
           cp data/price_state.json /tmp/price_state.json
           if [ "$MODE" = "snapshot" ]; then
             cp data/prices.json /tmp/prices.json
@@ -134,7 +139,7 @@ jobs:
           for i in 1 2 3; do
             git fetch origin "${GITHUB_REF_NAME}"
             git reset --hard "origin/${GITHUB_REF_NAME}"
-            cp /tmp/price_state.json data/price_state.json
+            python scripts/merge_price_state.py /tmp/price_state.json data/price_state.json
             if [ "$MODE" = "snapshot" ]; then
               cp /tmp/prices.json data/prices.json
               cp /tmp/history.json data/history.json
