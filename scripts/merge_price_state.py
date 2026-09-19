@@ -34,8 +34,9 @@ from pathlib import Path
 MONOTONIC = ("enrich_success_at", "enrich_checked_at", "last_enrich_alert_at",
              "enrich_error_notified", "last_stale_alert_utc", "last_heartbeat_utc",
              "last_recovered_utc")
-# Set together by _record_enrich_health and cleared together by a success.
-ERROR_GROUP = ("enrich_error", "enrich_error_since")
+# Written and cleared together by _record_enrich_health, from ONE look at Steam:
+# the error report, and the reason a cycle refreshed nothing.
+ERROR_GROUP = ("enrich_error", "enrich_error_since", "enrich_last_skip")
 
 
 def _newer(a, b) -> bool:

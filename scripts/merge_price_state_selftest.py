@@ -76,6 +76,15 @@ class MergeTests(unittest.TestCase):
         self.assertNotIn("enrich_error", out)
         self.assertNotIn("enrich_error_since", out)
 
+    def test_the_skip_reason_follows_the_latest_look_at_steam(self):
+        """enrich_last_skip explains a frozen ring, so a stale copy must not
+        overwrite it with an older story -- or blank it after a recovery."""
+        phone = {"enrich_checked_at": 500.0, "enrich_last_skip": "probe HTTP 429 (signals=4)"}
+        ci = {"enrich_checked_at": 100.0, "enrich_last_skip": "PRICES_NOENRICH set"}
+        self.assertEqual(merge(ci, phone)["enrich_last_skip"], "probe HTTP 429 (signals=4)")
+        recovered = {"enrich_checked_at": 900.0, "enrich_success_at": 900.0}
+        self.assertNotIn("enrich_last_skip", merge(recovered, phone))
+
     def test_a_fresh_error_survives_a_stale_healthy_copy(self):
         phone = {"enrich_checked_at": 500.0, "enrich_error": "ConnectionError",
                  "enrich_error_since": 480.0}

@@ -55,6 +55,8 @@ STALE_ALERT_REPEAT_SEC = 43200           # ...re-ping at most every 12h while it
 ENRICH_STALE_SEC = 21600                # allow known, self-healing priceoverview throttles lasting several hours
 ENRICH_ALERT_REPEAT_SEC = 86400         # one digest per day during a detail outage
 ENRICH_REFRESHED = 0                    # one success counter, retained for main even if enrich raises midway
+ENRICH_SKIP_REASON = ""                 # why a cycle refreshed nothing; recorded in
+#                                         price_state.json, never alerted on
 PACE_SEC = 180                           # push-chain startup pacing -> ~10-min cadence
 HEARTBEAT_SLEEP = 540                    # during cooldown: nap this long then re-fire the
 #                                          chain WITHOUT hitting Steam (GitHub's cron does
@@ -352,9 +354,11 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
     carry_mv_baseline). A budget caps the wall clock so Steam throttling can't run
     the job long; the offset only advances by what we actually processed, so a
     short run just resumes next time. Returns the new offset."""
-    global ENRICH_REFRESHED
+    global ENRICH_REFRESHED, ENRICH_SKIP_REASON
     ENRICH_REFRESHED = 0
+    ENRICH_SKIP_REASON = ""
     if os.environ.get("PRICES_NOENRICH"):       # keepalive / pure-sweep escape hatch
+        ENRICH_SKIP_REASON = "PRICES_NOENRICH set"
         return (int(prev_doc.get("_eoff", 0) or 0),
                 int(prev_doc.get("_hoff", 0) or 0))
     keys = sorted(items)
@@ -422,6 +426,12 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
                 max_attempts=1 if probing else None)
         if probing:
             if not d or not d.get("success"):
+                # The one branch that leaves BOTH rings where they were, so it is
+                # the one a frozen _eoff needs explained. signals came from the
+                # sweep and the rate probe before us; naming both makes it obvious
+                # which endpoint is actually refusing.
+                ENRICH_SKIP_REASON = (f"probe {LAST_GET_ERROR or 'no success'} "
+                                      f"(signals={THROTTLE_SIGNALS})")
                 print(f"enrich: probe failed ({LAST_GET_ERROR}) -> priceoverview "
                       f"still squeezed, skipping enrich this cycle "
                       f"(offset stays {off}, m/v keep carried values)",
@@ -813,6 +823,14 @@ def _record_enrich_health(refreshed: int, error: str | None) -> None:
 
     Offsets count attempted slots, so they can move even if every request failed.
     A successful reply with no sales is still healthy; price/volume need not change.
+
+    `enrich_last_skip` records WHY a cycle refreshed nothing. The phone runner's
+    stderr goes to a log on the phone, so when the detail ring froze on 2026-09-20
+    the repo held the fact of the stall (frozen `_eoff`) and no trace of its cause
+    — the only thing that would have named it was a device nobody was holding.
+    Deliberately NOT an error: `_maybe_alert_enrich` pings immediately on a new
+    `enrich_error`, and a priceoverview squeeze is the known self-healing case the
+    6h threshold exists for. This field only has to survive in git history.
     """
     now = time.time()
     state = _load_state()
@@ -820,6 +838,9 @@ def _record_enrich_health(refreshed: int, error: str | None) -> None:
     state["enrich_checked_at"] = now
     if refreshed:
         state["enrich_success_at"] = now
+        state.pop("enrich_last_skip", None)
+    elif ENRICH_SKIP_REASON:
+        state["enrich_last_skip"] = ENRICH_SKIP_REASON
     if error:
         if not state.get("enrich_error_since"):
             state["enrich_error_since"] = now

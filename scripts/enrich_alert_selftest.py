@@ -41,7 +41,7 @@ def harness():
               OUT=SimpleNamespace(read_text=lambda **kw: json.dumps(doc)),
               _prev_snapshot_meta=lambda: (now[0], "local"),
               _throttled=lambda: False, APPID=3678970, THROTTLE_SIGNALS=0,
-              ENRICH_REFRESHED=0)
+              ENRICH_REFRESHED=0, ENRICH_SKIP_REASON="")
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
@@ -64,6 +64,24 @@ class EnrichTests(unittest.TestCase):
 
     def watch(self, **kwargs):
         return self.ns["_maybe_alert_enrich"](**kwargs)
+
+    def test_skip_reason_is_recorded_but_never_rings(self):
+        """A frozen detail ring has to leave its cause in the repo -- the phone's
+        stderr is on the phone. It must not become an alert: a priceoverview
+        squeeze is the self-healing case the 6h threshold is there for."""
+        self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=4)"
+        self.record()
+        self.assertEqual(self.state["enrich_last_skip"], "probe HTTP 429 (signals=4)")
+        self.watch()
+        self.post.assert_not_called()
+        self.assertNotIn("enrich_error", self.state)
+
+    def test_a_success_clears_the_skip_reason(self):
+        self.ns["ENRICH_SKIP_REASON"] = "probe HTTP 429 (signals=4)"
+        self.record()
+        self.ns["ENRICH_SKIP_REASON"] = ""
+        self.record(count=3)
+        self.assertNotIn("enrich_last_skip", self.state)
 
     def test_fresh_t_with_no_detail_success_daily_limit(self):
         self.record()
