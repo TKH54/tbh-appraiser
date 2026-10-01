@@ -204,7 +204,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p .labels_snapshot
-          python scripts/seed_regression.py --bar 0.075 | tee before.log
+          python scripts/seed_regression.py --bar 0.075 --mis-out before_mis.json | tee before.log
           echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
           echo "rows=$(sed -n 's/.*(of \([0-9]\+\)).*/\1/p' before.log | tail -1)" >> "$GITHUB_OUTPUT"
 
@@ -240,7 +240,11 @@ jobs:
           LABELS_SNAPSHOT: .labels_snapshot/labels.jsonl.gz
         run: |
           set -o pipefail
-          python scripts/seed_regression.py --bar 0.075 | tee after.log
+          # Same labels as the BEFORE pass: crowd labels arriving in between, and
+          # labels of the base being added, would otherwise change the set.
+          ONLY=""
+          if [ -f before_mis.json ]; then ONLY="--only-ids before_mis.json"; fi
+          python scripts/seed_regression.py --bar 0.075 $ONLY --mis-out after_mis.json | tee after.log
           echo "mis=$(sed -n 's/.*MIS(confident wrong) *\([0-9]\+\).*/\1/p' after.log | tail -1)" >> "$GITHUB_OUTPUT"
           echo "rows=$(sed -n 's/.*(of \([0-9]\+\)).*/\1/p' after.log | tail -1)" >> "$GITHUB_OUTPUT"
 
@@ -266,7 +270,20 @@ jobs:
             echo "label set moved ($RB -> $RA); not an apples-to-apples comparison"
             echo "verdict=unmeasured" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if [ "$A" -le "$B" ]; then
+          # Label by label, too: a ref that fixes one old mis-ID and breaks one
+          # correct label leaves the total flat and would pass on counts alone.
+          if [ ! -f before_mis.json ] || [ ! -f after_mis.json ]; then
+            echo "no per-label MIS lists; not a label-by-label comparison"
+            echo "verdict=unmeasured" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          NEW=$(python -c "import json; b=json.load(open('before_mis.json')); a=json.load(open('after_mis.json')); print(len(set(a['mis'])-set(b['mis'])) if a['ids']==b['ids'] else -1)")
+          echo "new confident mis-IDs, label by label: $NEW"
+          echo "new_mis=$NEW" >> "$GITHUB_OUTPUT"
+          if [ "$NEW" = "-1" ]; then
+            echo "label ids differ between the passes"
+            echo "verdict=unmeasured" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$A" -le "$B" ] && [ "$NEW" = "0" ]; then
             echo "verdict=pass" >> "$GITHUB_OUTPUT"
           else
             echo "verdict=fail" >> "$GITHUB_OUTPUT"

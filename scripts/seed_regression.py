@@ -296,6 +296,12 @@ def main() -> None:
     ap.add_argument("--margin-sweep",
                     help="comma eps list (e.g. 0.005,0.01,0.02,0.03,0.05) -> ambiguity-guard "
                          "'?'-vs-MIS tradeoff on the CURRENT seed (read-only measurement)")
+    ap.add_argument("--mis-out",
+                    help="write {ids, mis}: every label id measured and the ids that "
+                         "came out MIS, so a later pass can be compared label by label")
+    ap.add_argument("--only-ids",
+                    help="a previous --mis-out file: measure exactly those labels, so "
+                         "labels arriving in between cannot move the comparison")
     args = ap.parse_args()
 
     url = os.environ.get("SUPABASE_URL", DEFAULT_URL).rstrip("/")
@@ -311,14 +317,26 @@ def main() -> None:
         ja = {}
 
     rows = fetch_rows(url, key)
+    # The autocatalog gate measures twice, ~35 min apart. Restricting the second
+    # pass to the first pass's label ids keeps both on the same set: crowd labels
+    # that arrived in between, and labels of the base being added (which the
+    # first pass filtered out as not-in-catalog), would otherwise change the
+    # count and leave every such gate "unmeasured".
+    keep = None
+    if args.only_ids:
+        keep = set(json.loads(Path(args.only_ids).read_text(encoding="utf-8"))["ids"])
     labels = []
+    label_ids = []
     for r in rows:
         if r.get("base") not in bases_set:
+            continue
+        if keep is not None and r.get("id") not in keep:
             continue
         sig = unpack_sig(r.get("sig", ""))
         if sig is None or int(sig[1].sum()) < 60:
             continue
         labels.append((r["base"], sig))
+        label_ids.append(r.get("id"))
     print(f"fetched {len(rows)} rows -> {len(labels)} valid catalog labels")
 
     if args.render:
@@ -352,6 +370,17 @@ def main() -> None:
         return
     cur = resolve_all(labels, cb, cV, cM, args.bar)
     cc, cm, cu = summarize(cur)
+    if args.mis_out:
+        # Without ids (the offset-paging fallback) a label-by-label comparison is
+        # impossible, so write nothing: the gate treats a missing file as unmeasured.
+        if label_ids and None not in label_ids:
+            Path(args.mis_out).write_text(json.dumps({
+                "ids": label_ids,
+                "mis": [i for i, (cl, rb, _) in zip(label_ids, cur)
+                        if classify(cl, rb) == "mis"],
+            }), encoding="utf-8")
+        else:
+            print("labels carry no id; not writing --mis-out", file=sys.stderr)
     print(f"\nCURRENT learned_seed ({len(cur_seed)} entries) @ bar {args.bar}:")
     print(f"  correct {cc} | MIS(confident wrong) {cm} | unresolved/'?' {cu}  "
           f"(of {len(labels)})")
