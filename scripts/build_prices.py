@@ -77,6 +77,14 @@ UNLOCK3_ABS = 25                         # distinct listed top-grade items >= th
 #                                          while restricted the count can only FALL, so...
 UNLOCK3_RISE = 5                         # ...any rise this big means new listings work again
 LAST_GET_ERROR = None                    # summary of the latest get() failure (logs/state)
+REQ_COUNTS: dict[str, list[int]] = {}    # this run's Steam HTTP ledger per endpoint:
+#                                          {"po"|"sr": [attempts, ok, http429]}. Written into
+#                                          prices.json as `_req`, so git history is an exact
+#                                          per-cycle request log. The _eoff/_hoff deltas count
+#                                          ITEMS, and get() can spend up to 5 attempts on one
+CATALOG = Path(__file__).resolve().parent.parent / "data" / "items.json"
+ICON_RE = re.compile(r"[A-Za-z0-9_-]{8,400}")   # a Steam economy-image hash
+SWEPT_ICONS: dict[str, str] = {}         # icon hash per swept name (see pending_icons)
 
 # ---- adaptive load-shedding (recurrence fix for the 2026-07-12 slow-cycle) ----
 # Steam throttles SUSTAINED load adaptively, in two shapes: hard 429s (retry
@@ -151,6 +159,10 @@ def get(url, *, max_attempts=None, **params):
             return None
         pointless_backoff = max_attempts is not None and attempt == tries - 1
         t_req = time.time()
+        ledger = REQ_COUNTS.setdefault(
+            "po" if "priceoverview" in url else "sr" if "search/render" in url else "other",
+            [0, 0, 0])
+        ledger[0] += 1
         try:
             r = S.get(url, params=params, timeout=20)
         except requests.RequestException as e:
@@ -164,7 +176,10 @@ def get(url, *, max_attempts=None, **params):
             THROTTLE_SIGNALS += 1
             print(f"  slow response ({time.time() - t_req:.0f}s) -> throttle signal "
                   f"{THROTTLE_SIGNALS}", file=sys.stderr)
+        if r.status_code == 429:
+            ledger[2] += 1
         if r.status_code == 200:
+            ledger[1] += 1
             try:
                 return r.json()
             except ValueError:
@@ -221,6 +236,11 @@ def sweep(prev_doc: dict) -> tuple[dict[str, dict], int]:
                 "usd": it.get("sell_price", 0) / 100.0,      # cents -> USD
                 "q": it.get("sell_listings", 0),
             }
+            desc = it.get("asset_description") or {}
+            icon = desc.get("icon_url") or ""
+            if (desc.get("appid") == APPID and ICON_RE.fullmatch(icon)
+                    and desc.get("market_hash_name") == it["hash_name"]):
+                SWEPT_ICONS[it["hash_name"]] = icon
         start += len(results)
         pages += 1
         if start >= total:              # full circle -> next cycle restarts at 0
@@ -373,11 +393,11 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
     SHARD via per-item priceoverview, then advance the persisted offset (`_eoff`).
 
     The catalog is ~1200 items; a full per-item pass is far too slow for a ~10-min
-    job, so each run only touches PRICES_SHARD items (default 12): a couple on the
+    job, so each run only touches PRICES_SHARD items (default 6): a couple on the
     hot ring (see hot_ring), the rest on the plain lap from the saved offset. The
     whole catalog therefore cycles every ceil(N/lap slots) runs
-    (~17h — see the rate note below; a faster lap just gets the IP 429'd and ends
-    up refreshing LESS per day) while the cheap sweep keeps EVERY item's lowest ask/listing fresh each
+    (~45h at 4 lap slots — see the rate note below; a faster lap just runs into the
+    12h budget and goes blind instead) while the cheap sweep keeps EVERY item's lowest ask/listing fresh each
     run. Carried-but-not-refreshed items keep their previous m/v (set by
     carry_mv_baseline). A budget caps the wall clock so Steam throttling can't run
     the job long; the offset only advances by what we actually processed, so a
@@ -407,7 +427,19 @@ def enrich_shard(items: dict[str, dict], prev_doc: dict, t0: float) -> tuple[int
     # blind. Sweep (search/render) is throttled separately and stays untouched.
     # These are the numbers to retune if the lockout returns — both are env
     # overridable, so `-f shard=` / `-f delay=` can test a value before editing.
-    shard = int(os.environ.get("PRICES_SHARD") or 12)
+    #
+    # ...and it did NOT stop going blind (found 2026-10-01 from the same deltas).
+    # At 12 items + 1 rate probe per cycle, every 12h window from 08-19 to 10-01
+    # (~85 of them) ran 47 cycles / ~600 items, then 25 cycles of 429: ~7.8h on,
+    # ~4.2h blind, twice a day (about 04:30-09:00 and 16:30-21:00 JST, the evening
+    # one on top of Japanese peak hours). The 25-item regime above was the same
+    # wall reached faster (~578 items in 3.9h, 8.1h blind). Both fit ~600 per 12h,
+    # fixed or rolling window (the data cannot tell them apart). Halving the rate
+    # only moved the blind window. 6 (2 hot + 4 lap) + the probe = ~7 per cycle,
+    # ~504 per 12h, under the wall with room for retries: the hot ring stays ~2h
+    # fresh around the clock, at the cost of a slower lap (~27h -> ~45h).
+    # Verify with prices.json `_req` (real HTTP attempts per cycle), not offsets.
+    shard = int(os.environ.get("PRICES_SHARD") or 6)
     delay = float(os.environ.get("PRICES_DELAY") or 5.0)    # per-item pacing (s)
     deadline = time.time() + int(os.environ.get("PRICES_BUDGET_SEC") or 600)
     off = int(prev_doc.get("_eoff", 0) or 0) % n
@@ -673,7 +705,34 @@ def fetch_fx() -> dict:
     return {"JPY": 155.0, "CNY": 7.1, "TWD": 32.0, "KRW": 1380.0, "RUB": 90.0}
 
 
-def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff=0) -> None:
+def pending_icons(items: dict[str, dict], prev_doc: dict) -> dict[str, str]:
+    """Icon hash for every listed item the catalog lacks, published in
+    prices.json as `_icons` for autocatalog.
+
+    CI's autocatalog learns a new item's icon from Steam search, and GitHub's IP
+    range got 429 from it on every run (40/40 from 2026-09-20 to 10-01), while
+    the sweep already receives `asset_description.icon_url` with every result and
+    threw it away. Keeping it costs no request. It also covers names the fuzzy
+    `query=` search cannot rank into its first 20 hits (Eternal Axe (Cosmic) C was
+    deferred that way on 2026-10-01), because the sweep walks the market by name.
+    Pending names only: a name drops out once the catalog has it or the snapshot
+    stops listing it. A name this cycle's shard did not reach keeps its previous
+    hash, since one sweep sees only ~150 of the ~1100 items."""
+    try:
+        catalog = set(json.loads(CATALOG.read_text(encoding="utf-8")))
+    except Exception:
+        return {}           # cannot tell what is pending -> publish nothing
+    prev = prev_doc.get("_icons") or {}
+    out = {}
+    for h in sorted(set(items) - catalog):
+        icon = SWEPT_ICONS.get(h) or prev.get(h)
+        if isinstance(icon, str) and ICON_RE.fullmatch(icon):
+            out[h] = icon
+    return out
+
+
+def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff=0,
+                   icons=None) -> None:
     out = {
         "t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "src": SOURCE,                     # ci|local — _gate() reads this to stand down
@@ -684,6 +743,9 @@ def write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff=0) -> 
         "_eoff": eoff,                     # rotating enrich offset (persisted)
         "_soff": soff,                     # rotating sweep offset (persisted)
         "_hoff": hoff,                     # rotating offset within the hot ring
+        "_req": {k: list(v) for k, v in sorted(REQ_COUNTS.items())},
+        #                                    this run's HTTP attempts/ok/429 per endpoint
+        **({"_icons": icons} if icons else {}),   # see pending_icons
         "gev": grade_averages(items, rate),
         "fx": fx,
         "items": {h: {"p": round(v["usd"] * rate, 1), "q": v["q"],
@@ -1074,6 +1136,7 @@ def main() -> None:
     # checked against the previous rate / market fx (see sane_rate).
     rate = sane_rate(derive_rate(fresh), prev_doc.get("rate"), fx.get("JPY"))
     items = merge_carry(fresh, prev_doc)
+    icons = pending_icons(items, prev_doc)
     unlocked = detect_unlocked(items)      # reads previous OUT
     unlocked3 = detect_unlocked3(items, prev_doc)
     prev_off = int(prev_doc.get("_eoff", 0) or 0)
@@ -1081,7 +1144,7 @@ def main() -> None:
     carry_mv_baseline(items, prev_doc)     # carry prev median/volume onto all items
     carry_last_median(items, rate)
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, unlocked3, prev_off, soff, fx, prev_hoff)
+    write_snapshot(items, rate, unlocked, unlocked3, prev_off, soff, fx, prev_hoff, icons)
     print(f"fast snapshot: {len(fresh)} fresh (_soff {prev_doc.get('_soff', 0) or 0}"
           f"->{soff}) / {len(items)} items, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s", file=sys.stderr)
@@ -1100,7 +1163,7 @@ def main() -> None:
     _maybe_alert_enrich()  # immediate CI error ping; phone errors are relayed next CI run
     carry_last_median(items, rate)         # apply lm to the freshly enriched items
     update_history(items, rate)
-    write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff)
+    write_snapshot(items, rate, unlocked, unlocked3, eoff, soff, fx, hoff, icons)
     print(f"final snapshot: {len(items)} items, rate {rate}, unlocked {unlocked}, "
           f"unlocked3 {unlocked3}, _eoff={eoff}, {OUT.stat().st_size // 1024} KB, "
           f"elapsed={time.time() - t0:.0f}s, signals={THROTTLE_SIGNALS}"
