@@ -713,8 +713,9 @@ def pending_icons(items: dict[str, dict], prev_doc: dict) -> dict[str, str]:
     range got 429 from it on every run (40/40 from 2026-09-20 to 10-01), while
     the sweep already receives `asset_description.icon_url` with every result and
     threw it away. Keeping it costs no request. It also covers names the fuzzy
-    `query=` search cannot rank into its first 20 hits (Eternal Axe (Cosmic) C was
-    deferred that way on 2026-10-01), because the sweep walks the market by name.
+    `query=` search might not rank into its first 20 hits, because the sweep walks
+    the market by name. (It cannot help an item nobody lists: Eternal Axe (Cosmic)
+    C, deferred on 2026-10-01, had simply sold its one listing the day before.)
     Pending names only: a name drops out once the catalog has it or the snapshot
     stops listing it. A name this cycle's shard did not reach keeps its previous
     hash, since one sweep sees only ~150 of the ~1100 items."""

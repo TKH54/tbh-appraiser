@@ -250,7 +250,7 @@ def swept_icons(names: list[str], prices_doc: dict, have: dict) -> dict[str, str
     with each pending item's sweep result, matched on market_hash_name and appid.
     Using it means resolve_icons never has to ask Steam search for those names.
     Search refused GitHub's IP range on every CI run from 2026-09-20 to 10-01
-    (40/40), and its fuzzy ranking missed Eternal Axe (Cosmic) C even from home.
+    (40/40), and its fuzzy ranking only ever looks at the first 20 hits.
     The hash is only where the lookup starts: every guard below still judges the
     icon exactly as it would one resolved by search."""
     swept = prices_doc.get("_icons") or {}
