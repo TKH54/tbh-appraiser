@@ -240,6 +240,25 @@ def resolve_icons(sess, names: list[str], cache: dict) -> dict[str, str]:
     return out
 
 
+SWEPT_ICON_RE = re.compile(r"[A-Za-z0-9_-]{8,400}")
+
+
+def swept_icons(names: list[str], prices_doc: dict, have: dict) -> dict[str, str]:
+    """Icons the price sweep already saw, for names not resolved yet.
+
+    build_prices.py publishes `_icons` in prices.json: the icon hash Steam sent
+    with each pending item's sweep result, matched on market_hash_name and appid.
+    Using it means resolve_icons never has to ask Steam search for those names.
+    Search refused GitHub's IP range on every CI run from 2026-09-20 to 10-01
+    (40/40), and its fuzzy ranking missed Eternal Axe (Cosmic) C even from home.
+    The hash is only where the lookup starts: every guard below still judges the
+    icon exactly as it would one resolved by search."""
+    swept = prices_doc.get("_icons") or {}
+    return {h: swept[h] for h in names
+            if h not in have and isinstance(swept.get(h), str)
+            and SWEPT_ICON_RE.fullmatch(swept[h])}
+
+
 def sprite_ref(sess, icon: str) -> tuple[bytes, bytes]:
     """Download one sprite and pack it exactly as build_web_data.py would.
 
@@ -318,7 +337,8 @@ def main() -> int:
     args = ap.parse_args()
 
     items = _read("items.json")
-    prices = _read("prices.json")["items"]
+    prices_doc = _read("prices.json")
+    prices = prices_doc["items"]
     pending = sorted(set(prices) - set(items))
 
     # A previous phase this run already paid for these lookups.
@@ -352,6 +372,7 @@ def main() -> int:
         new_names = pending
     _want = set(new_names)
     cache = {k: v for k, v in (prev.get("icons") or {}).items() if k in _want}
+    cache.update(swept_icons(new_names, prices_doc, cache))
 
     report = {"at": time.time(), "checked": len(prices), "pending": len(pending),
               "new": len(new_names), "window": list(new_names), "tier1": [],

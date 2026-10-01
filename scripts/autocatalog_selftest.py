@@ -69,12 +69,16 @@ def make_fixture(tmp: Path) -> Path:
     return d
 
 
-def run(tmp: Path, listed: dict[str, str], tier: str = "all"):
+def run(tmp: Path, listed: dict[str, str], tier: str = "all", swept: bool = False):
     """Run main() against the fixture with Steam stubbed. `listed` maps a new
-    market_hash_name to the icon Steam would report for it."""
+    market_hash_name to the icon Steam would report for it. With `swept`, the
+    icons arrive the way the phone's price sweep publishes them (prices.json
+    `_icons`) and any Steam request at all fails the run."""
     d = tmp / "data"
     items = json.loads((d / "items.json").read_text(encoding="utf-8"))
     prices = {"items": {h: {"p": 1.0, "q": 1} for h in list(items) + list(listed)}}
+    if swept:
+        prices["_icons"] = dict(listed)
     (d / "prices.json").write_text(json.dumps(prices, ensure_ascii=False,
                                               separators=(",", ":")), encoding="utf-8")
 
@@ -84,7 +88,12 @@ def run(tmp: Path, listed: dict[str, str], tier: str = "all"):
     importlib.reload(a)
     a.ROOT, a.DATA = tmp, d
     a.REPORT = tmp / "_autocatalog_report.json"
-    a.resolve_icons = lambda sess, names, cache: {h: listed[h] for h in names if h in listed}
+    if swept:
+        def no_steam(*_args, **_kw):
+            raise AssertionError("asked Steam search despite swept icons")
+        a._get = no_steam           # the real resolve_icons runs, off the cache
+    else:
+        a.resolve_icons = lambda sess, names, cache: {h: listed[h] for h in names if h in listed}
     # A real sprite fetch is the one thing that needs the network. The byte
     # layout is what matters here, so hand back a correctly-sized blob.
     a.sprite_ref = lambda sess, icon: (bytes([7]) * (32 * 32 * 3), bytes([1]) * (32 * 32))
@@ -162,6 +171,32 @@ def main() -> int:
               e.get("nj") == 1 and "name_ja" not in e, str(e))
         check("a material entry has empty rarity and stays tradeable",
               e["rarity"] == "" and e["tradeable"] is True)
+
+    # --- icons from the price sweep replace Steam search --------------------
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        make_fixture(tmp)
+        try:
+            _, items, refs, blob, meta, rep = run(tmp, {
+                "Rune Sword (Cosmic) A": "ICON_SWORD",     # tier 1 off a swept icon
+                "Rune Sword (Plagued) A": "ICON_NEW2",     # tier 2 off a swept icon
+            }, swept=True)
+            asked = ""
+        except AssertionError as e:
+            items, refs, rep, asked = {}, [], {}, str(e)
+        check("swept icons fold without a single Steam search", not asked, asked)
+        check("a swept known icon still lands as tier 1",
+              "Rune Sword (Cosmic) A" in items and rep.get("tier1") == ["Rune Sword (Cosmic) A"],
+              str(rep.get("tier1")))
+        check("a swept new icon still goes through tier 2",
+              rep.get("tier2") == ["Rune Sword (Plagued) A"] and len(refs) == 3,
+              str(rep.get("tier2")))
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import autocatalog as a
+        check("a malformed swept icon is ignored",
+              a.swept_icons(["X", "Y"], {"_icons": {"X": "has space", "Y": ""}}, {}) == {})
+        check("a swept icon never overrides one already resolved this run",
+              a.swept_icons(["X"], {"_icons": {"X": "ICON_OTHER"}}, {"X": "ICON_KEPT"}) == {})
 
     # --- the rotating window covers everything ------------------------------
     for n, size in ((101, 60), (250, 60), (61, 60)):
