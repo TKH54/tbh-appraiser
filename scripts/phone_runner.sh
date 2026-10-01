@@ -84,7 +84,22 @@ cycle() {
     return 1
 }
 
+# Termux:Boot can start us a second before Wi-Fi is up (2026-10-01: runner
+# 17:05:13, Wi-Fi 17:05:14). The first cycle's fetch then failed and the failure
+# backoff slept 20 min before the first push. Wait for GitHub instead -- this
+# asks github.com only, never Steam -- for up to 5 min, then start either way:
+# a real outage is the backoff's job, not this loop's.
+wait_for_network() {
+    local i
+    for i in $(seq 1 30); do
+        git -C "$REPO" ls-remote origin HEAD >/dev/null 2>&1 && return 0
+        sleep 10
+    done
+    log "network still down after 5 min — starting anyway"
+}
+
 log "=== runner started (repo=$REPO) ==="
+wait_for_network
 while true; do
     start=$(date +%s)
     if cycle; then
