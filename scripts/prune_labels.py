@@ -101,9 +101,38 @@ def main() -> int:
         _delete(f"{url}/rest/v1/labels?id=gte.{chunk[0]}&id=lte.{chunk[-1]}", headers)
         print(f"deleted {min(i + CHUNK, len(to_del))}/{len(to_del)}")
 
-    remain = len(_table_ids(url, headers))
-    print(f"done: table now {remain} rows (expected {len(ids) - len(to_del)})")
-    return 0 if remain == len(ids) - len(to_del) else 1
+    # Verify the PLAN by id, not the totals. The table is live -- site visitors
+    # keep correcting items while this runs -- so demanding an exact final count
+    # fails on a perfectly good prune. On 2026-10-05 the count came back 20001
+    # instead of 20000 and `bash -e` threw away a promotion whose gates had
+    # already passed (the release bump, the PR and the auto-merge are all
+    # downstream of this step). One extra row is consistent with either a label
+    # arriving mid-prune or one planned row surviving; the old check could not
+    # tell those apart, which is the whole problem. Both are now named.
+    #
+    # Counting is not enough in EITHER direction: a concurrent insert can mask a
+    # row we were supposed to keep going missing (delete 1 extra, gain 2 new, and
+    # the total still clears). So both sides are compared as id SETS.
+    remain_ids = set(_table_ids(url, headers))
+    survived = sorted(i for i in to_del if i in remain_ids)
+    lost = sorted((set(ids) - set(to_del)) - remain_ids)
+    print(f"done: table now {len(remain_ids)} rows (planned {len(ids) - len(to_del)}; "
+          f"new labels can arrive mid-prune, so a higher number is normal)")
+    if survived:
+        # Under-deletion: a DELETE that silently did nothing (PostgREST's row cap
+        # bit us exactly that way once). The table then keeps growing toward the
+        # 50k insert-blocking trigger, so this must be loud.
+        print(f"FAILED: {len(survived)} rows we deleted are still there "
+              f"(e.g. id {survived[:5]})", file=sys.stderr)
+        return 1
+    if lost:
+        # Over-deletion: rows we meant to KEEP are gone. Coverage was verified
+        # against the snapshot only for `to_del`, so these may be archived
+        # nowhere at all.
+        print(f"FAILED: {len(lost)} row(s) outside the plan disappeared "
+              f"(e.g. id {lost[:5]}) -- never verified as archived", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
