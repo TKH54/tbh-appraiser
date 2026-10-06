@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626ak";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626ak";
-import { detectPageTab } from "./detect.js?v20260626ak";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626ak";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709y";
+import { Matcher, _internal } from "./recognize.js?v20260626al";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626al";
+import { detectPageTab } from "./detect.js?v20260626al";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626al";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709z";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -24,10 +24,9 @@ function netOf(price) {
   // floor at NET_MIN so sub-¥6 items (e.g. ¥4.9 gems) don't show net ¥1/¥0
   return Math.max(NET_MIN, Math.min(price * FEE, price - FEE_MIN));
 }
-const FEEDBACK_TO = "takahasi599@gmail.com";   // ⑦ goes only to the developer
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.35";
+const APP_VERSION = "1.7.36";
 const CHANGELOG = [
   { v: "1.7.23", d: "2026/8/19",
     ja: "最上位素材6種（原初の樹液・深淵の真珠ほか）を査定に対応。記念コインの期待値に「典型」を併記しました。",
@@ -1421,7 +1420,8 @@ sel.addEventListener("change", () => {
 
 // ---------------- feedback (⑦ private to developer) ----------------
 // One-click sending: POST to FEEDBACK_ENDPOINT when configured (e.g. a free
-// Formspree form URL); otherwise falls back to a mailto link.
+// Formspree form URL). No mailto fallback: a mailto needs the developer's own
+// address in this public file (removed 2026-10-06 for privacy).
 const FEEDBACK_ENDPOINT = "";   // ←公開前に Formspree のURLを入れると完全ワンクリック送信になる
 $("fbCancel").addEventListener("click", () => { $("fbModal").style.display = "none"; });
 $("fbSend").addEventListener("click", async () => {
@@ -1435,8 +1435,6 @@ $("fbSend").addEventListener("click", async () => {
         body: JSON.stringify({ message: body, lang: LANG, ua: navigator.userAgent }),
       });
     } catch (e) {}
-  } else {
-    location.href = `mailto:${FEEDBACK_TO}?subject=${encodeURIComponent("[TBH査定] feedback")}&body=${encodeURIComponent(body)}`;
   }
   // thanks INSIDE the modal, then it closes itself
   $("fbText").value = "";
