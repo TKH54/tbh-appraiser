@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626ao";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626ao";
-import { detectPageTab } from "./detect.js?v20260626ao";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626ao";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709ac";
+import { Matcher, _internal } from "./recognize.js?v20260626ap";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626ap";
+import { detectPageTab } from "./detect.js?v20260626ap";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626ap";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709ad";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -26,7 +26,7 @@ function netOf(price) {
 }
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.39";
+const APP_VERSION = "1.7.40";
 const CHANGELOG = [
   { v: "1.7.23", d: "2026/8/19",
     ja: "最上位素材6種（原初の樹液・深淵の真珠ほか）を査定に対応。記念コインの期待値に「典型」を併記しました。",
