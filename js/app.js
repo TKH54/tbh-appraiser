@@ -1,11 +1,11 @@
 // TBH 倉庫まるごと査定 — main app logic (static site, no backend).
 // Screenshots are processed entirely in this browser; nothing is uploaded.
 
-import { Matcher, _internal } from "./recognize.js?v20260626au";
-import { scanImage, variantsByBase } from "./pipeline.js?v20260626au";
-import { detectPageTab } from "./detect.js?v20260626au";
-import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626au";
-import { T, LANGS, pickLang } from "./i18n.js?v20260709ai";
+import { Matcher, _internal } from "./recognize.js?v20260626av";
+import { scanImage, variantsByBase } from "./pipeline.js?v20260626av";
+import { detectPageTab } from "./detect.js?v20260626av";
+import { putPage, deletePage, clearPages, loadPages, dbAvailable } from "./store.js?v20260626av";
+import { T, LANGS, pickLang } from "./i18n.js?v20260709aj";
 const { vecFromItem, extractFlood, crop, resizeArea } = _internal;
 
 const $ = id => document.getElementById(id);
@@ -26,8 +26,13 @@ function netOf(price) {
 }
 
 // ---------------- changelog (⑳ page bottom; newest first) ----------------
-const APP_VERSION = "1.7.45";
+const APP_VERSION = "1.7.46";
+// Site hiatus: prices are frozen and nothing processes crowd labels (see /PAUSED).
+const PAUSED = true;
 const CHANGELOG = [
+  { v: "1.7.46", d: "2026/11/1",
+    ja: "更新を休止しました。価格は休止時点のままです。",
+    en: "Updates are on hiatus. Prices stay as they were at that point." },
   { v: "1.7.23", d: "2026/8/19",
     ja: "最上位素材6種（原初の樹液・深淵の真珠ほか）を査定に対応。記念コインの期待値に「典型」を併記しました。",
     en: "Added 6 top-tier materials (Primordial Sap, Abyssal Pearl and others). Anniversary-coin EV now shows a “typical” value next to the average." },
@@ -276,6 +281,7 @@ let _staleDismissed = false;
 function checkStale() {
   const el = $("staleAlert");
   if (!el) return;
+  if (PAUSED) { el.style.display = "block"; el.textContent = t("paused_notice"); return; }
   const raw = DATA?.prices?.t;
   const ageMin = raw ? Math.floor((Date.now() - new Date(raw).getTime()) / 60000) : null;
   if (_staleDismissed || ageMin == null || ageMin < STALE_MIN) { el.style.display = "none"; return; }
@@ -577,6 +583,7 @@ function saveLabel(cellImg, base, rarity = null, meta = {}) {
 const CROWD_URL = "https://ebtaabxbfracykncjhfc.supabase.co/rest/v1/labels";
 const CROWD_KEY = "sb_publishable_Y3JKuEbN5OuUeiNM2GSG_A__AMHHR-j";
 function uploadLabel(base, rarity, sig, meta = {}) {
+  if (PAUSED) return;
   try {
     const packed = packSig(sig);                       // {v, m} base64
     const body = {

@@ -27,6 +27,7 @@ import requests
 APPID = 3678970
 OUT = Path(__file__).resolve().parent.parent / "data" / "prices.json"
 HIST = Path(__file__).resolve().parent.parent / "data" / "history.json"
+PAUSE_FILE = Path(__file__).resolve().parent.parent / "PAUSED"
 
 S = requests.Session()
 S.headers.update({"User-Agent": "tbh-appraiser-price-snapshot/1.0 (polite; 1 req/5s)"})
@@ -1181,4 +1182,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Site hiatus. The phone re-reads this script every cycle, so this file is the
+    # remote stop switch: no Steam request, no snapshot, nothing pushed.
+    if PAUSE_FILE.exists():
+        print("paused: PAUSED file present; leaving Steam alone", file=sys.stderr)
+    else:
+        main()

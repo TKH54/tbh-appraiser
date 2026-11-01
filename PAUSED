@@ -1,0 +1,5 @@
+This site has been on hiatus since 2026-11-01.
+
+While this file exists, scripts/build_prices.py stops before contacting Steam.
+Resuming also needs PAUSED set to false in js/app.js and the disabled workflows
+turned back on. See CLAUDE.md.
